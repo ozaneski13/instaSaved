@@ -1,39 +1,377 @@
 # instaSaved
 
-Instagram **Kaydedilenler** (Saved) listendeki her gönderiyi tek bir okunabilir listeye döker: gönderide ne
-anlatılıyor / gösteriliyor (video, fotoğraf ve karuseller için LLM analizi), açıklama metni ve gönderi sahibinin
-**sabitlediği yorumlar**. Tarayıcı açmaz, artımlı çalışır, tek kullanıcı için tasarlanmıştır (Windows 11 + NVIDIA GPU
-üzerinde geliştirildi; CPU ile de çalışır).
+Turn your Instagram **Saved** posts into one readable digest. For every saved post the tool produces what the post
+is about (an LLM analysis of videos, photos and carousels), the caption, and the author's **pinned comments**.
+No browser is opened, runs are incremental, and everything is designed for a single user (developed on Windows 11
+with an NVIDIA GPU; CPU-only also works).
 
-> **English summary.** instaSaved turns your Instagram *Saved* posts into a Markdown/JSON digest: for every post it
-> produces a Turkish content analysis (video transcript via local Whisper + sampled frames, or the photos themselves,
-> sent to a vision-capable LLM), the caption, and the author's **pinned comments** (read from Instagram's mobile API,
-> the only surface that exposes `is_pinned`). Incremental, resumable, no browser. LLM backend is pluggable
-> (Claude Code CLI with a Claude subscription, Anthropic API, or any OpenAI-compatible endpoint incl. Ollama).
+*Türkçe açıklama için aşağıdaki [Türkçe](#türkçe) bölümüne bakın.*
 
 ---
 
-## İçindekiler
+## Contents
 
-1. [Ne üretir](#ne-üretir)
-2. [Nasıl çalışır](#nasıl-çalışır)
-3. [Sabitli yorumlar nasıl bulunuyor](#sabitli-yorumlar-nasıl-bulunuyor)
-4. [Kurulum](#kurulum)
-5. [Hızlı başlangıç](#hızlı-başlangıç)
-6. [Komutlar](#komutlar)
-7. [Yapılandırma](#yapılandırma)
-8. [LLM sağlayıcıları](#llm-sağlayıcıları)
-9. [Çıktı formatı](#çıktı-formatı)
-10. [Artımlılık ve durum takibi](#artımlılık-ve-durum-takibi)
-11. [Güvenlik, gizlilik ve riskler](#güvenlik-gizlilik-ve-riskler)
-12. [Sorun giderme](#sorun-giderme)
-13. [Geliştirme](#geliştirme)
-14. [Nasıl geliştirildi](#nasıl-geliştirildi)
-15. [Lisans](#lisans)
+1. [What it produces](#what-it-produces)
+2. [How it works](#how-it-works)
+3. [How pinned comments are detected](#how-pinned-comments-are-detected)
+4. [Installation](#installation)
+5. [Quick start](#quick-start)
+6. [Commands](#commands)
+7. [Configuration](#configuration)
+8. [LLM providers](#llm-providers)
+9. [Output format](#output-format)
+10. [Incremental runs and state](#incremental-runs-and-state)
+11. [Security, privacy and risks](#security-privacy-and-risks)
+12. [Troubleshooting](#troubleshooting)
+13. [Development](#development)
+14. [How it was built](#how-it-was-built)
+15. [License](#license)
+16. [Türkçe](#türkçe)
 
 ---
 
-## Ne üretir
+## What it produces
+
+One entry per post in `output/saved_posts.md` (analysis text is written in Turkish by default, see
+[LLM providers](#llm-providers) for changing the prompt):
+
+```markdown
+6. **@jeffrey_in_nyc** · [Open post](https://www.instagram.com/p/Da_S-LVze42/) · 2026-07-20
+   - **Content:** A visitor's first trip to an otter café in Tokyo. The frames show the visitor wearing the
+     café's pink protective apron with an otter climbing into their lap, while other otters roam the play area.
+     The visitor talks about how cute the animals are and how they come up to cuddle.
+     _(video, language: en, 51-word transcript, 2 images inspected)_
+   - **Caption:**
+     > First Time Visiting an Otter Cafe in Tokyo Japan #japan #travel #tokyo #experience
+   - **Pinned comments:**
+     - @jeffrey_in_nyc: 📍Otters Family in Harajuku Tokyo
+     - @jeffrey_in_nyc: Sorry guys I said cute like a million times but I couldn't help it😆
+```
+
+The same data is written field by field to `output/saved_posts.json` (url, author, caption, content_summary,
+transcript, language, pinned_comments, collections, statuses…) for feeding other tools.
+
+Analysis by post type:
+
+| Type | Material | Analysis |
+|---|---|---|
+| Video with speech | Whisper transcript + 2 frames + caption | What is said, places/products/people shown, advice given |
+| Video without speech (music) | 4 frames + caption | What is shown, on-screen text |
+| Photo | The image itself + caption | What is shown, text in the image |
+| Carousel | Up to 6 images (+ any video children) + caption | Summary of the whole carousel (e.g. "list of 30 Japanese phrases") |
+
+---
+
+## How it works
+
+```
+ ig-login (once)                          run.cmd → 4  (every run)
+ ┌──────────────────┐   ┌──────────────────────────────────────────────────────────────────────┐
+ │ Instagram mobile │   │ 1. sync    feed/saved/posts  ──► new posts ──► SQLite (state.db)        │
+ │ API session      │──►│            media/{pk}/comments ──► pinned comments (is_pinned)         │
+ │ (instagrapi)     │   │ 2. process download media from CDN ──► faster-whisper (CUDA) transcript │
+ └──────────────────┘   │            frames via PyAV / images via Pillow ──► LLM analysis         │
+                        │ 3. report  output/saved_posts.md + .json                              │
+                        └──────────────────────────────────────────────────────────────────────┘
+```
+
+1. **Source (`ig_source.py`)** — Instagram's mobile API through `instagrapi`, used as raw JSON: saved posts
+   (`feed/saved/posts/`), collections (`collections/list/`, `feed/collection/{id}/`), comments
+   (`media/{pk}/comments/`) and `media/{pk}/info/` to refresh expired media URLs. Instagram's throttling and
+   verification signals (`PleaseWaitFewMinutes`, `ChallengeRequired`, `LoginRequired`…) are mapped to a single
+   **HardStop** exception: the program does not retry, persists its state and exits.
+2. **Parsing (`parsers.py`)** — pure functions covered by unit tests; they never touch Instagram. From a feed item:
+   caption, highest-resolution video/image URLs, carousel children. From a comments response: the pinned ones.
+3. **Media (`video.py`, `media.py`, `transcribe.py`)** — signed CDN URLs are downloaded immediately (they expire);
+   video is transcribed with `faster-whisper large-v3` (tries CUDA float16 → int8_float16 → CPU); PyAV samples frames
+   evenly across the timeline; Pillow shrinks images to an 800 px long edge. Files are deleted after analysis.
+4. **Analysis (`summarize.py`)** — post type, caption, transcript and images go to the LLM in one prompt; 2–4 sentences.
+   The provider is pluggable (see below).
+5. **State (`store.py`)** — SQLite, committed after every step. An interrupted run resumes; finished posts are never
+   re-fetched. Raw API responses are archived in `raw_payloads` (latest per post) so data can be re-parsed if the
+   schema drifts.
+6. **Report (`report.py`)** — Markdown + JSON.
+
+---
+
+## How pinned comments are detected
+
+This was the hardest part and was settled with live probes (2026-09-02):
+
+- Instagram's **web** surface exposes no pin information even in a logged-in session: not the web
+  `api/v1/media/{pk}/comments/` response, not the embedded GraphQL connection
+  (`xdt_api__v1__media__media_id__comments__connection`), not the page DOM. Posts known to have pinned comments
+  show nothing.
+- The **mobile API** response carries `pinned_comment_count` at the root and `is_pinned: true` on pinned comment
+  objects. Unpinned comments have **no key at all**, so the code reads `bool(comment.get("is_pinned"))`, never
+  `comment["is_pinned"]`, and cross-checks against `pinned_comment_count`.
+- Look-alike fields are deliberately ignored: `hoisted_comments` (always empty), `is_ranked_comment`,
+  `comment_index`, `pinned_for_users`, `visual_comment_reply_sticker_info.is_pinned` (an unrelated integer) and the
+  profile-grid `Post.is_pinned`.
+- Pinned comments arrive on the first page, so only the first page is read; other comments are not stored.
+
+The official Instagram Graph API exposes neither saved posts nor pin state, which is why the tool works with the
+user's own session (see Risks).
+
+---
+
+## Installation
+
+Requirements: Python 3.10+, [uv](https://docs.astral.sh/uv/) (or pip), an Instagram account. GPU optional
+(NVIDIA with a CUDA 12 driver; verified on an RTX 5080). ffmpeg is **not** required (PyAV bundles FFmpeg).
+
+```bat
+git clone https://github.com/ozaneski13/instaSaved.git
+cd instaSaved
+uv venv --python 3.10 .venv
+uv pip install --python .venv\Scripts\python.exe -r requirements.txt
+copy config.example.json config.json
+```
+
+Edit at least `username` and the `llm` section in `config.json` (see below). The Whisper model (~3 GB) is downloaded
+on first use.
+
+No GPU: `"whisper": {"device": "cpu", "compute_type": "int8", "model": "medium"}` (slow but works).
+
+**Windows + pip CUDA note:** the DLLs shipped by `nvidia-cublas-cu12` / `nvidia-cudnn-cu12` are not on PATH;
+`transcribe.py` adds them to the DLL search path automatically. If you still see `cublas64_12.dll not found`, update
+the driver or switch to CPU mode.
+
+The batch launcher `run.cmd` is Windows-only; on macOS/Linux run `python -m igsaved <command>` from the project root.
+
+---
+
+## Quick start
+
+Double-click `run.cmd`; a numbered menu appears (the window stays open when a job finishes):
+
+```
+ 1 - Instagram login (mobile API, once)   <- first step
+ 2 - List collections
+ 3 - Trial run, 3 posts (run --limit 3)
+ 4 - Full run (run)
+ 5 - Run on a specific collection
+ 6 - Re-analyze all posts (process --redo + report)
+ 7 - Status
+ 8 - Report only
+ 9 - Chrome login (alternative source: source=browser)
+```
+
+1. **1** → you are asked for username and password (the password is not echoed and **never stored**; enter the 2FA
+   code if prompted). The session is kept in `data/instagrapi_session.json`; you will not be asked again.
+2. **3** → trial with 3 posts. `output/saved_posts.md` appears.
+3. **4** → full run. On later days run **4** again: only newly saved posts are processed.
+
+From a terminal: `run.cmd ig-login`, `run.cmd run --limit 3`, `run.cmd run`.
+
+---
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `run.cmd ig-login` | Creates the mobile API session (password via `getpass`, not stored) |
+| `run.cmd collections` | Lists your saved collections |
+| `run.cmd sync [--limit N] [--full] [--collection NAME ...]` | Scans the saved list, fetches new posts and their pinned comments |
+| `run.cmd process [--limit N] [--redo] [--no-summary]` | Downloads media → transcript/frames → LLM analysis. `--redo` re-analyzes everything, `--no-summary` transcribes only |
+| `run.cmd report` | Regenerates the `output/` files |
+| `run.cmd status` | Status counters |
+| `run.cmd run [same options]` | `sync` + `process` + `report` |
+| `run.cmd login` / `probe URL` / `demo URL` | Alternative browser source (Playwright + Chrome); see the `source` setting |
+
+`--collection` can be repeated; names are case-insensitive.
+
+---
+
+## Configuration
+
+Every field is documented with `_help` notes in `config.example.json`. Summary:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `username` | `""` | Your Instagram username |
+| `source` | `instagrapi` | `instagrapi` (mobile API, no browser) or `browser` (Playwright + Chrome) |
+| `scope.collections` | `[]` | Empty → all saved posts; otherwise only these collections |
+| `llm.provider` | `claude_code` | `claude_code` \| `anthropic` \| `openai_compatible` |
+| `llm.model` | `""` | claude_code: `opus`/`sonnet`/`haiku`; anthropic: e.g. `claude-opus-5`; openai_compatible: the endpoint's model name |
+| `llm.effort` | `""` | `low`/`medium`/`high` for claude_code |
+| `llm.api_key_env` / `llm.api_key` | `ANTHROPIC_API_KEY` / `""` | Key for anthropic and openai_compatible |
+| `llm.base_url` | `""` | openai_compatible endpoint |
+| `analysis.frames_speech` / `frames_no_speech` | `2` / `4` | Frames per video sent to the LLM |
+| `analysis.max_images` | `6` | Max images taken from a carousel |
+| `analysis.max_edge` | `800` | Image long edge in px |
+| `whisper.*` | `large-v3`, `cuda`, `float16` | Transcription model and device |
+| `pacing.max_posts_per_run` | `40` | Posts whose comments are fetched per run |
+| `instagrapi.delay_range` | `[3, 7]` | Random delay between API requests (seconds) |
+| `video.keep_files` | `false` | `true` keeps downloaded videos |
+
+---
+
+## LLM providers
+
+The analysis layer uses one image-capable interface: `complete(system, user, images)`.
+
+**`claude_code` (default)** — via the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) `claude -p`;
+works with a Claude Max/Pro subscription, no API key needed. Setup: `npm i -g @anthropic-ai/claude-code`, then run
+`claude` and `/login` once. Images are handed to the CLI's `Read` tool as files. Note: the CLI's `--bare` mode does not
+pick up the stored login, so it is not used.
+
+**`anthropic`** — the official Python SDK; `ANTHROPIC_API_KEY` environment variable (or `llm.api_key`). Images are sent
+as base64. Example: `"llm": {"provider": "anthropic", "model": "claude-opus-5"}`.
+
+**`openai_compatible`** — any endpoint speaking `{base_url}/chat/completions`; images go as `image_url` data URIs.
+Examples: OpenAI (`https://api.openai.com/v1`, `gpt-4o`), local Ollama (`http://localhost:11434/v1` with a **vision**
+model such as `qwen3-vl:8b`; text-only models cannot see the images).
+
+After switching providers, refresh old analyses with `run.cmd process --redo`.
+
+**Output language.** The analysis prompt lives in `summarize.py` (`SYSTEM_TR`) and asks for Turkish; edit it to get
+another language, then run `process --redo`.
+
+---
+
+## Output format
+
+`saved_posts.json`, one object per post:
+
+```json
+{
+  "shortcode": "Da_S-LVze42",
+  "url": "https://www.instagram.com/p/Da_S-LVze42/",
+  "author": "jeffrey_in_nyc",
+  "taken_at": 1784500000,
+  "caption": "First Time Visiting an Otter Cafe ...",
+  "has_video": true,
+  "media_type": 2,
+  "collections": [],
+  "content_summary": "Tokyo'daki bir su samuru kafesine ...",
+  "content_line": "... _(video, dil: en, 51 kelime transkript, 2 görsel incelendi)_",
+  "transcript": "...",
+  "language": "en",
+  "no_speech": false,
+  "pinned_status": "ok",
+  "pinned_comments": [{"username": "jeffrey_in_nyc", "text": "📍Otters Family in Harajuku Tokyo", "is_pinned": true}],
+  "comments_source": "instagrapi",
+  "comment_count": 57,
+  "statuses": {"details_status": "ok", "comments_status": "ok", "video_status": "ok",
+               "transcript_status": "ok", "summary_status": "ok"}
+}
+```
+
+`media_type`: 1 photo, 2 video, 8 carousel. Posts are listed newest-saved first.
+
+---
+
+## Incremental runs and state
+
+- Every post is a row in `data/state.db`; stages are tracked in separate status columns
+  (`details_status`, `comments_status`, `pinned_status`, `video_status`, `transcript_status`, `summary_status`).
+- `sync` walks the list newest-first and stops after 3 consecutive pages of already-known posts (`--full` disables this).
+- Failed steps are retried on the next run; a post is attempted **at most 3 times** per stage, then marked `failed`
+  so it stops consuming the run budget.
+- An expired CDN URL (HTTP 403) is refreshed from the mobile API immediately and the download retried once.
+- `process --redo` queues every post for re-analysis (transcripts are regenerated, videos re-downloaded).
+- Older `state.db` files are completed automatically by a schema migration.
+
+---
+
+## Security, privacy and risks
+
+- **Passwords are never stored.** `ig-login` reads the password with `getpass` and passes it only to the `instagrapi`
+  login call; only session cookies/authorization data are written to disk (`data/instagrapi_session.json`). That file,
+  the `data/` and `output/` folders are in `.gitignore` — **never commit them**; the session file grants access to the account.
+- **API keys** are read only from environment variables (or your local `config.json`), which is also ignored by git.
+  The repository ships only `config.example.json`.
+- **Terms of use:** because Instagram's official API does not expose saved posts, the tool uses the mobile API with your
+  own session. This violates Instagram's Terms of Use and may trigger a temporary verification (challenge) or
+  restriction on your account. Mitigations: 3–7 s between requests, 40 posts per run, immediate stop on throttling
+  signals (no retries), a single session. The decision and responsibility are the user's.
+- Only **your own** saved posts are read; nothing is written (no likes, comments or follows).
+- For the analysis, post text and downscaled images are sent to the provider you choose (Claude Code / Anthropic /
+  your own endpoint). To stay local, use `openai_compatible` with an Ollama vision model.
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `OTURUM YOK` / `login_required` | `run.cmd` → 1 to log in again |
+| `SERT DURMA: ... PleaseWaitFewMinutes / ChallengeRequired` | Instagram throttling. Wait a few hours; for a challenge, approve it in the app, then run 4 again |
+| `Claude Code CLI oturumu yok` | `claude auth status` in a terminal; if needed `claude` → `/login` |
+| `claude` command not found | `npm i -g @anthropic-ai/claude-code` or set the full path in `config.json → llm.exe` |
+| `cublas64_12.dll ... cannot be loaded` | `uv pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`; otherwise `whisper.device=cpu` |
+| Analysis says it cannot see the images | A non-vision model is configured for openai_compatible; use a vision model |
+| Empty report | Check counters with `run.cmd status`; read the tail of `data/igsaved.log` |
+
+Log: `data/igsaved.log` (rotates at 5 MB). Raw API responses: `data/state.db` → `raw_payloads`. Log messages are in Turkish.
+
+---
+
+## Development
+
+```bat
+.venv\Scripts\python -m pytest          # unit tests (fully offline)
+```
+
+Project layout:
+
+```
+igsaved/
+  cli.py          commands; sync / process / report flow, attempt caps, HardStop handling
+  config.py       config.json + defaults (deep merge)
+  store.py        SQLite state store, schema migration, raw response archive
+  ig_source.py    instagrapi source (saved posts, collections, comments, media info) + exception mapping
+  ig_private.py   ig-login (getpass), session file
+  parsers.py      pure parsers (feed item, video/image URLs, comments/is_pinned, embedded JSON)
+  saved_feed.py   saved-list pagination (API and browser), incremental stop
+  comments.py     comment collection (API; strategy chain for the browser source)
+  media.py        PyAV frame extraction, Pillow downscaling
+  video.py        CDN download (.part → rename)
+  transcribe.py   faster-whisper wrapper, CUDA→CPU fallback, Windows DLL path fix
+  summarize.py    LLM providers (claude_code / anthropic / openai_compatible), image-capable prompt
+  report.py       Markdown + JSON
+  browser.py      Playwright layer (alternative source: source=browser)
+tests/            57 tests: parsers, state machine, report, providers (fakes), collections, migration
+```
+
+Design principles: parsing is pure and testable; every Instagram call goes through one place and is mapped to
+HardStop; no hard-coded `doc_id`/`query_hash`; commit after every step; raw responses are kept so they can be
+re-parsed if the schema drifts.
+
+---
+
+## How it was built
+
+The project was built in one night together with Claude Code:
+
+1. **Research (14 parallel agents):** instaloader, instagrapi, Instagram web/GraphQL/mobile API response shapes,
+   the official "Download your information" export, a Playwright approach, and the video pipeline on Windows/RTX 5080
+   (faster-whisper/CTranslate2 Blackwell support, model choice for Turkish). Every finding went through adversarial
+   verification.
+2. **First version (browser-based):** Playwright with a logged-in Chrome profile, capturing Instagram's own JSON
+   responses, and an offline end-to-end demo (public reel → CUDA transcript → Turkish summary).
+3. **Independent code review (two rounds, 30 agents):** 17 confirmed defects fixed — continuing downloads after a
+   HardStop, attributing comments to the wrong post, endless retry loops, `id()`-based deduplication, missing the
+   throttling message inside XHR JSON, and more. Each got a regression test.
+4. **Live verification and pivot:** probes with a real session showed the web surface carries no pin information at
+   all; the source moved to the mobile API, the browser dependency was dropped, image analysis was added for photos,
+   carousels and speechless videos, a `claude_code` provider running on a Claude Max subscription was written, and
+   collection selection was added.
+
+---
+
+## License
+
+MIT — see `LICENSE`.
+
+---
+
+## Türkçe
+
+Instagram **Kaydedilenler** listendeki her gönderiyi tek bir okunabilir listeye döker: gönderide ne anlatılıyor / gösteriliyor (video, fotoğraf ve karuseller için LLM analizi), açıklama metni ve gönderi sahibinin **sabitlediği yorumlar**. Tarayıcı açmaz, artımlı çalışır, tek kullanıcı için tasarlanmıştır. Kurulum ve komutlar İngilizce bölümdekiyle aynıdır; aşağıda tam Türkçe açıklama.
+
+### Ne üretir
 
 `output/saved_posts.md` içinde her gönderi için bir madde:
 
@@ -64,7 +402,7 @@ Gönderi türüne göre analiz:
 
 ---
 
-## Nasıl çalışır
+### Nasıl çalışır
 
 ```
  ig-login (bir kez)                       run.cmd → 4  (her koşu)
@@ -96,7 +434,7 @@ Gönderi türüne göre analiz:
 
 ---
 
-## Sabitli yorumlar nasıl bulunuyor
+### Sabitli yorumlar nasıl bulunuyor
 
 Bu projenin en zor kısmıydı ve kesin sonuca canlı probelarla ulaşıldı (2026-09-02):
 
@@ -115,7 +453,7 @@ oturumuyla çalışır (bkz. Riskler).
 
 ---
 
-## Kurulum
+### Kurulum
 
 Gereksinimler: Python 3.10+, [uv](https://docs.astral.sh/uv/) (ya da pip), Instagram hesabı. GPU isteğe bağlı
 (NVIDIA + CUDA 12 sürücüsü; RTX 5080'de doğrulandı). ffmpeg **gerekmez** (PyAV bundled FFmpeg kullanır).
@@ -139,7 +477,7 @@ sürücünü güncelle ya da CPU moduna geç.
 
 ---
 
-## Hızlı başlangıç
+### Hızlı başlangıç
 
 `run.cmd` dosyasına çift tıkla; numaralı menü açılır (pencere iş bitince kapanmaz):
 
@@ -164,7 +502,7 @@ Terminalden aynı işler: `run.cmd ig-login`, `run.cmd run --limit 3`, `run.cmd 
 
 ---
 
-## Komutlar
+### Komutlar
 
 | Komut | Ne yapar |
 |---|---|
@@ -181,7 +519,7 @@ Terminalden aynı işler: `run.cmd ig-login`, `run.cmd run --limit 3`, `run.cmd 
 
 ---
 
-## Yapılandırma
+### Yapılandırma
 
 Tüm alanlar `config.example.json` içinde `_help` notlarıyla açıklanmıştır. Özet:
 
@@ -205,7 +543,7 @@ Tüm alanlar `config.example.json` içinde `_help` notlarıyla açıklanmıştı
 
 ---
 
-## LLM sağlayıcıları
+### LLM sağlayıcıları
 
 Analiz katmanı görsel destekli tek bir arayüz kullanır: `complete(system, user, images)`.
 
@@ -225,7 +563,7 @@ Sağlayıcı değiştirdikten sonra eski analizleri yenilemek için `run.cmd pro
 
 ---
 
-## Çıktı formatı
+### Çıktı formatı
 
 `saved_posts.json` her gönderi için:
 
@@ -257,7 +595,7 @@ Sağlayıcı değiştirdikten sonra eski analizleri yenilemek için `run.cmd pro
 
 ---
 
-## Artımlılık ve durum takibi
+### Artımlılık ve durum takibi
 
 - Her gönderi `data/state.db` içinde bir satırdır; aşamalar ayrı durum sütunlarıyla izlenir
   (`details_status`, `comments_status`, `pinned_status`, `video_status`, `transcript_status`, `summary_status`).
@@ -270,7 +608,7 @@ Sağlayıcı değiştirdikten sonra eski analizleri yenilemek için `run.cmd pro
 
 ---
 
-## Güvenlik, gizlilik ve riskler
+### Güvenlik, gizlilik ve riskler
 
 - **Şifre asla saklanmaz.** `ig-login` şifreyi `getpass` ile alır, yalnızca `instagrapi` giriş çağrısına verir;
   diske yalnızca oturum çerezleri/yetki verileri yazılır (`data/instagrapi_session.json`). Bu dosya, `data/` ve `output/`
@@ -287,7 +625,7 @@ Sağlayıcı değiştirdikten sonra eski analizleri yenilemek için `run.cmd pro
 
 ---
 
-## Sorun giderme
+### Sorun giderme
 
 | Belirti | Çözüm |
 |---|---|
@@ -303,7 +641,7 @@ Log: `data/igsaved.log` (5 MB'de döner). Ham API yanıtları: `data/state.db` �
 
 ---
 
-## Geliştirme
+### Geliştirme
 
 ```bat
 .venv\Scripts\python -m pytest          # birim testleri (ağa çıkmaz)
@@ -336,7 +674,7 @@ yeniden ayrıştırılabilsin.
 
 ---
 
-## Nasıl geliştirildi
+### Nasıl geliştirildi
 
 Proje bir gecede, Claude Code ile birlikte, şu adımlarla yapıldı:
 
@@ -354,6 +692,6 @@ Proje bir gecede, Claude Code ile birlikte, şu adımlarla yapıldı:
 
 ---
 
-## Lisans
+### Lisans
 
 MIT — bkz. `LICENSE`.
