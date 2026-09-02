@@ -32,8 +32,8 @@ with an NVIDIA GPU; CPU-only also works).
 
 ## What it produces
 
-One entry per post in `output/saved_posts.md` (analysis text is written in Turkish by default, see
-[LLM providers](#llm-providers) for changing the prompt):
+One entry per post in `output/saved_posts.md`. Report labels and analysis language are configurable
+(`report.language`: `tr` | `en`, `analysis.language`: e.g. `"English"`); the example below uses `en` / `English`:
 
 ```markdown
 6. **@jeffrey_in_nyc** · [Open post](https://www.instagram.com/p/Da_S-LVze42/) · 2026-07-20
@@ -47,6 +47,10 @@ One entry per post in `output/saved_posts.md` (analysis text is written in Turki
      - @jeffrey_in_nyc: 📍Otters Family in Harajuku Tokyo
      - @jeffrey_in_nyc: Sorry guys I said cute like a million times but I couldn't help it😆
 ```
+
+With the defaults (`tr` / `Türkçe`) the same entry reads `[Postu aç]`, `**İçerik:**`, `**Açıklama:**`,
+`**Sabitli yorumlar:**` and the analysis is in Turkish. A `**Collection:**` line appears when a post was found through
+a named collection.
 
 The same data is written field by field to `output/saved_posts.json` (url, author, caption, content_summary,
 transcript, language, pinned_comments, collections, statuses…) for feeding other tools.
@@ -88,7 +92,7 @@ Analysis by post type:
 4. **Analysis (`summarize.py`)** — post type, caption, transcript and images go to the LLM in one prompt; 2–4 sentences.
    The provider is pluggable (see below).
 5. **State (`store.py`)** — SQLite, committed after every step. An interrupted run resumes; finished posts are never
-   re-fetched. Raw API responses are archived in `raw_payloads` (latest per post) so data can be re-parsed if the
+   re-fetched. Raw API responses are archived in `raw_payloads` (latest per post and response kind) so data can be re-parsed if the
    schema drifts.
 6. **Report (`report.py`)** — Markdown + JSON.
 
@@ -104,7 +108,8 @@ This was the hardest part and was settled with live probes (2026-09-02):
   show nothing.
 - The **mobile API** response carries `pinned_comment_count` at the root and `is_pinned: true` on pinned comment
   objects. Unpinned comments have **no key at all**, so the code reads `bool(comment.get("is_pinned"))`, never
-  `comment["is_pinned"]`, and cross-checks against `pinned_comment_count`.
+  `comment["is_pinned"]`. `pinned_comment_count` is used as a cross-check: if fewer pinned comments were found on the
+  first page than the count says, the post is marked `partial` and the report shows the count next to the list.
 - Look-alike fields are deliberately ignored: `hoisted_comments` (always empty), `is_ranked_comment`,
   `comment_index`, `pinned_for_users`, `visual_comment_reply_sticker_info.is_pinned` (an unrelated integer) and the
   profile-grid `Post.is_pinned`.
@@ -117,7 +122,8 @@ user's own session (see Risks).
 
 ## Installation
 
-Requirements: Python 3.10+, [uv](https://docs.astral.sh/uv/) (or pip), an Instagram account. GPU optional
+Requirements: Python 3.10+, [uv](https://docs.astral.sh/uv/) (or pip), an Instagram account. All Python dependencies
+(including PyAV and Pillow) come from `requirements.txt`. GPU optional
 (NVIDIA with a CUDA 12 driver; verified on an RTX 5080). ffmpeg is **not** required (PyAV bundles FFmpeg).
 
 ```bat
@@ -128,8 +134,8 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 copy config.example.json config.json
 ```
 
-Edit at least `username` and the `llm` section in `config.json` (see below). The Whisper model (~3 GB) is downloaded
-on first use.
+Edit at least `instagrapi.username` (or top-level `username`) and the `llm` section in `config.json` (see below).
+The Whisper model (~3 GB) is downloaded on first use.
 
 No GPU: `"whisper": {"device": "cpu", "compute_type": "int8", "model": "medium"}` (slow but works).
 
@@ -143,18 +149,20 @@ The batch launcher `run.cmd` is Windows-only; on macOS/Linux run `python -m igsa
 
 ## Quick start
 
-Double-click `run.cmd`; a numbered menu appears (the window stays open when a job finishes):
+Double-click `run.cmd`; a numbered menu appears (menu text is Turkish; the window stays open when a job finishes,
+`0` or an empty input exits):
 
 ```
- 1 - Instagram login (mobile API, once)   <- first step
- 2 - List collections
- 3 - Trial run, 3 posts (run --limit 3)
- 4 - Full run (run)
- 5 - Run on a specific collection
- 6 - Re-analyze all posts (process --redo + report)
- 7 - Status
- 8 - Report only
- 9 - Chrome login (alternative source: source=browser)
+ 1 - Instagram girisi (mobil API, bir kez)      Instagram login (mobile API, once)  <- first step
+ 2 - Koleksiyonlari listele                     List collections
+ 3 - Deneme kosusu, 3 post                      Trial run, 3 posts (run --limit 3)
+ 4 - Tam kosu                                   Full run (run)
+ 5 - Belirli koleksiyonda kosu                  Run on one collection (asks for its name)
+ 6 - Tum postlari yeniden analiz et             Re-analyze all posts (process --redo + report)
+ 7 - Durum                                      Status
+ 8 - Sadece rapor                               Report only
+ 9 - Chrome ile giris                           Chrome login (alternative source: source=browser)
+ 0 - Cikis                                      Exit
 ```
 
 1. **1** → you are asked for username and password (the password is not echoed and **never stored**; enter the 2FA
@@ -177,7 +185,8 @@ From a terminal: `run.cmd ig-login`, `run.cmd run --limit 3`, `run.cmd run`.
 | `run.cmd report` | Regenerates the `output/` files |
 | `run.cmd status` | Status counters |
 | `run.cmd run [same options]` | `sync` + `process` + `report` |
-| `run.cmd login` / `probe URL` / `demo URL` | Alternative browser source (Playwright + Chrome); see the `source` setting |
+| `run.cmd probe URL` | Pinned-comment probe for one post (mobile API when a session exists, otherwise Chrome); writes to `data/probe.db` |
+| `run.cmd login` / `demo URL` | Alternative browser source (Playwright + Chrome); see the `source` setting |
 
 `--collection` can be repeated; names are case-insensitive.
 
@@ -185,11 +194,11 @@ From a terminal: `run.cmd ig-login`, `run.cmd run --limit 3`, `run.cmd run`.
 
 ## Configuration
 
-Every field is documented with `_help` notes in `config.example.json`. Summary:
+Every field is documented with `_help` notes in `config.example.json`. The most important ones:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `username` | `""` | Your Instagram username |
+| `instagrapi.username` / `username` | `""` | Your Instagram username (asked interactively if both are empty) |
 | `source` | `instagrapi` | `instagrapi` (mobile API, no browser) or `browser` (Playwright + Chrome) |
 | `scope.collections` | `[]` | Empty → all saved posts; otherwise only these collections |
 | `llm.provider` | `claude_code` | `claude_code` \| `anthropic` \| `openai_compatible` |
@@ -200,9 +209,12 @@ Every field is documented with `_help` notes in `config.example.json`. Summary:
 | `analysis.frames_speech` / `frames_no_speech` | `2` / `4` | Frames per video sent to the LLM |
 | `analysis.max_images` | `6` | Max images taken from a carousel |
 | `analysis.max_edge` | `800` | Image long edge in px |
+| `analysis.language` | `Türkçe` | Language of the analysis text (e.g. `English`) |
+| `report.language` | `tr` | Report labels: `tr` or `en` |
 | `whisper.*` | `large-v3`, `cuda`, `float16` | Transcription model and device |
 | `pacing.max_posts_per_run` | `40` | Posts whose comments are fetched per run |
 | `instagrapi.delay_range` | `[3, 7]` | Random delay between API requests (seconds) |
+| `llm.timeout` | `120` | Request timeout in seconds (`claude_code` uses at least 240) |
 | `video.keep_files` | `false` | `true` keeps downloaded videos |
 
 ---
@@ -225,8 +237,9 @@ model such as `qwen3-vl:8b`; text-only models cannot see the images).
 
 After switching providers, refresh old analyses with `run.cmd process --redo`.
 
-**Output language.** The analysis prompt lives in `summarize.py` (`SYSTEM_TR`) and asks for Turkish; edit it to get
-another language, then run `process --redo`.
+**Output language.** `analysis.language` sets the language of the analysis text (default `Türkçe`; any other value
+switches to an English prompt template asking for that language) and `report.language` (`tr`/`en`) sets the report
+labels. After changing either, run `process --redo` / `report`.
 
 ---
 
@@ -267,10 +280,13 @@ another language, then run `process --redo`.
 - Every post is a row in `data/state.db`; stages are tracked in separate status columns
   (`details_status`, `comments_status`, `pinned_status`, `video_status`, `transcript_status`, `summary_status`).
 - `sync` walks the list newest-first and stops after 3 consecutive pages of already-known posts (`--full` disables this).
-- Failed steps are retried on the next run; a post is attempted **at most 3 times** per stage, then marked `failed`
-  so it stops consuming the run budget.
-- An expired CDN URL (HTTP 403) is refreshed from the mobile API immediately and the download retried once.
-- `process --redo` queues every post for re-analysis (transcripts are regenerated, videos re-downloaded).
+- Failed steps are retried on the next run; each stage (comments, media/URL refresh, analysis) is attempted
+  **at most 3 times** per post, then marked `failed` so it stops consuming the run budget (`process --redo` resets
+  the analysis counter).
+- An expired or missing CDN URL (HTTP 403/404/410) is refreshed from the mobile API immediately and the download
+  retried once (mobile API session required).
+- `process --redo` queues every post whose details are complete for re-analysis (transcripts are regenerated; videos are
+  re-downloaded unless `video.keep_files` kept a copy).
 - Older `state.db` files are completed automatically by a schema migration.
 
 ---
@@ -281,7 +297,8 @@ another language, then run `process --redo`.
   login call; only session cookies/authorization data are written to disk (`data/instagrapi_session.json`). That file,
   the `data/` and `output/` folders are in `.gitignore` — **never commit them**; the session file grants access to the account.
 - **API keys** are read only from environment variables (or your local `config.json`), which is also ignored by git.
-  The repository ships only `config.example.json`.
+  The repository ships `config.example.json` plus two provider examples (`config.anthropic-api.json`,
+  `config.ollama.json`), none containing secrets.
 - **Terms of use:** because Instagram's official API does not expose saved posts, the tool uses the mobile API with your
   own session. This violates Instagram's Terms of Use and may trigger a temporary verification (challenge) or
   restriction on your account. Mitigations: 3–7 s between requests, 40 posts per run, immediate stop on throttling
@@ -429,7 +446,7 @@ Gönderi türüne göre analiz:
    Sağlayıcı takılıp çıkarılabilir (aşağıda).
 5. **Durum (`store.py`)** — SQLite; her adımdan sonra commit. Kesinti olursa kaldığı yerden devam eder, bitmiş gönderiyi
    yeniden çekmez. Ham API yanıtları `raw_payloads` tablosunda saklanır (şema değişirse yeniden ayrıştırmak için;
-   gönderi başına yalnızca en yenisi tutulur).
+   gönderi ve yanıt türü başına yalnızca en yenisi tutulur).
 6. **Rapor (`report.py`)** — Markdown + JSON.
 
 ---
@@ -443,7 +460,8 @@ Bu projenin en zor kısmıydı ve kesin sonuca canlı probelarla ulaşıldı (20
   Sabitli yorum olduğu bilinen gönderilerde bile alan yok.
 - **Mobil API** yanıtı ise kökte `pinned_comment_count` ve sabitli yorum nesnesinde `is_pinned: true` taşıyor.
   Sabitli olmayan yorumda anahtar **hiç yok** — bu yüzden kod `bool(comment.get("is_pinned"))` okur, `comment["is_pinned"]`
-  asla; ve `pinned_comment_count` ile çapraz kontrol eder.
+  asla. `pinned_comment_count` çapraz kontrol içindir: ilk sayfada sayaçtan az sabitli bulunursa post `partial` olarak
+  işaretlenir ve raporda listenin yanında sayaç gösterilir.
 - Tuzak alanlar bilinçli olarak yok sayılır: `hoisted_comments` (her zaman boş), `is_ranked_comment`, `comment_index`,
   `pinned_for_users`, `visual_comment_reply_sticker_info.is_pinned` (alakasız bir tamsayı), profil sabitlemesi `Post.is_pinned`.
 - Sabitli yorumlar ilk sayfada geldiği için yalnızca ilk sayfa okunur; diğer yorumlar saklanmaz.
@@ -466,8 +484,8 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 copy config.example.json config.json
 ```
 
-`config.json` içinde en azından `username` ve `llm` bölümünü düzenle (aşağıda). Whisper modeli (~3 GB) ilk
-kullanımda indirilir.
+`config.json` içinde en azından `instagrapi.username` (ya da üst düzey `username`) ve `llm` bölümünü düzenle
+(aşağıda). Whisper modeli (~3 GB) ilk kullanımda indirilir.
 
 GPU yoksa: `"whisper": {"device": "cpu", "compute_type": "int8", "model": "medium"}` (yavaş ama çalışır).
 
@@ -486,11 +504,12 @@ sürücünü güncelle ya da CPU moduna geç.
  2 - Koleksiyonlari listele
  3 - Deneme kosusu, 3 post (run --limit 3)
  4 - Tam kosu (run)
- 5 - Belirli koleksiyonda kosu
+ 5 - Belirli koleksiyonda kosu (adi sorar)
  6 - Tum postlari yeniden analiz et (process --redo + report)
  7 - Durum (status)
  8 - Sadece rapor (report)
  9 - Chrome ile giris (alternatif kaynak: source=browser)
+ 0 - Cikis (bos Enter de cikar)
 ```
 
 1. **1** → kullanıcı adı ve şifre sorulur (şifre ekranda görünmez, **kaydedilmez**; 2FA kodu istenirse gir).
@@ -513,7 +532,8 @@ Terminalden aynı işler: `run.cmd ig-login`, `run.cmd run --limit 3`, `run.cmd 
 | `run.cmd report` | `output/` dosyalarını yeniden üretir |
 | `run.cmd status` | Durum sayaçları |
 | `run.cmd run [aynı seçenekler]` | `sync` + `process` + `report` |
-| `run.cmd login` / `probe URL` / `demo URL` | Alternatif tarayıcı kaynağı (Playwright + Chrome); bkz. `source` ayarı |
+| `run.cmd probe URL` | Tek postta sabitli yorum probu (oturum varsa mobil API, yoksa Chrome); `data/probe.db`'ye yazar |
+| `run.cmd login` / `demo URL` | Alternatif tarayıcı kaynağı (Playwright + Chrome); bkz. `source` ayarı |
 
 `--collection` birden çok kez verilebilir; koleksiyon adı büyük/küçük harf duyarsızdır.
 
@@ -521,11 +541,11 @@ Terminalden aynı işler: `run.cmd ig-login`, `run.cmd run --limit 3`, `run.cmd 
 
 ### Yapılandırma
 
-Tüm alanlar `config.example.json` içinde `_help` notlarıyla açıklanmıştır. Özet:
+Tüm alanlar `config.example.json` içinde `_help` notlarıyla açıklanmıştır. En önemlileri:
 
 | Alan | Varsayılan | Açıklama |
 |---|---|---|
-| `username` | `""` | Instagram kullanıcı adın |
+| `instagrapi.username` / `username` | `""` | Instagram kullanıcı adın (ikisi de boşsa girişte sorulur) |
 | `source` | `instagrapi` | `instagrapi` (mobil API, tarayıcısız) ya da `browser` (Playwright + Chrome) |
 | `scope.collections` | `[]` | Boş → tüm kaydedilenler; dolu → yalnızca bu koleksiyonlar |
 | `llm.provider` | `claude_code` | `claude_code` \| `anthropic` \| `openai_compatible` |
@@ -536,6 +556,8 @@ Tüm alanlar `config.example.json` içinde `_help` notlarıyla açıklanmıştı
 | `analysis.frames_speech` / `frames_no_speech` | `2` / `4` | Video başına LLM'e giden kare sayısı |
 | `analysis.max_images` | `6` | Karuselden alınacak en fazla görsel |
 | `analysis.max_edge` | `800` | Görsel uzun kenarı (px) |
+| `analysis.language` | `Türkçe` | Analiz metninin dili (örn. `English`) |
+| `report.language` | `tr` | Rapor etiketleri: `tr` ya da `en` |
 | `whisper.*` | `large-v3`, `cuda`, `float16` | Transkript modeli ve cihazı |
 | `pacing.max_posts_per_run` | `40` | Koşu başına yorumları çekilecek gönderi sayısı |
 | `instagrapi.delay_range` | `[3, 7]` | API istekleri arası rastgele bekleme (sn) |
@@ -600,10 +622,13 @@ Sağlayıcı değiştirdikten sonra eski analizleri yenilemek için `run.cmd pro
 - Her gönderi `data/state.db` içinde bir satırdır; aşamalar ayrı durum sütunlarıyla izlenir
   (`details_status`, `comments_status`, `pinned_status`, `video_status`, `transcript_status`, `summary_status`).
 - `sync`, listeyi en yeniden eskiye tarar ve ardışık 3 sayfa tamamen bilinen gönderi görünce durur (`--full` ile kapatılır).
-- Başarısız adımlar sonraki koşuda yeniden denenir; aynı gönderi bir aşamada **en fazla 3 kez** denenir, sonra
-  `failed` olarak işaretlenir ve koşu bütçesini meşgul etmez.
-- Süresi dolan CDN URL'si (HTTP 403) anında mobil API'den tazelenir ve indirme bir kez daha denenir.
-- `process --redo` tüm gönderileri yeniden analiz kuyruğuna alır (transkriptler yeniden üretilir, videolar yeniden indirilir).
+- Başarısız adımlar sonraki koşuda yeniden denenir; her aşama (yorumlar, medya/URL tazeleme, analiz) gönderi başına
+  **en fazla 3 kez** denenir, sonra `failed` olarak işaretlenir ve koşu bütçesini meşgul etmez (`process --redo` analiz
+  sayacını sıfırlar).
+- Süresi dolan ya da kaybolan CDN URL'si (HTTP 403/404/410) anında mobil API'den tazelenir ve indirme bir kez daha
+  denenir (mobil API oturumu gerekir).
+- `process --redo` detayları tamam olan tüm gönderileri yeniden analiz kuyruğuna alır (transkriptler yeniden üretilir;
+  `video.keep_files` ile saklanmış video varsa yeniden indirilmez).
 - Şema değişikliklerinde eski `state.db` otomatik migrasyonla tamamlanır.
 
 ---
@@ -614,7 +639,8 @@ Sağlayıcı değiştirdikten sonra eski analizleri yenilemek için `run.cmd pro
   diske yalnızca oturum çerezleri/yetki verileri yazılır (`data/instagrapi_session.json`). Bu dosya, `data/` ve `output/`
   klasörleri `.gitignore` içindedir — **repoya asla eklemeyin**; oturum dosyası hesaba erişim demektir.
 - **API anahtarları** yalnızca ortam değişkeninden (ya da yerel `config.json`'dan) okunur; `config.json` de
-  `.gitignore`'dadır. Repo yalnızca `config.example.json` içerir.
+  `.gitignore`'dadır. Repo `config.example.json` ile iki sağlayıcı örneği (`config.anthropic-api.json`,
+  `config.ollama.json`) içerir; hiçbirinde anahtar yok.
 - **Kullanım şartları:** Instagram'ın resmî API'si kaydedilenleri vermediği için araç, hesabınızın kendi oturumuyla
   mobil API'yi kullanır. Bu, Instagram Kullanım Şartları'na aykırıdır ve hesabınızda geçici doğrulama (challenge)
   ya da kısıtlamaya yol açabilir. Riski azaltmak için: istekler arası 3-7 sn bekleme, koşu başına 40 gönderi,

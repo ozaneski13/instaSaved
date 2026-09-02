@@ -1,15 +1,16 @@
 {
   "_help": "Bu dosyayı config.json olarak kopyala. '_help' alanları yoksayılır. Boş bırakılan alanlar varsayılanı kullanır.",
-
   "username": "",
   "_help_username": "Instagram kullanıcı adın (ig-login sırasında da sorulur).",
-
   "source": "instagrapi",
   "_help_source": "instagrapi = mobil API, tarayıcı gerekmez (önerilen). browser = Playwright + Chrome (alternatif; `login` komutu).",
-
-  "scope": {"collections": []},
+  "data_dir": "data",
+  "output_dir": "output",
+  "_help_dirs": "data_dir: state.db, oturum dosyası, geçici medya. output_dir: saved_posts.md / .json.",
+  "scope": {
+    "collections": []
+  },
   "_help_scope": "Boş → tüm kaydedilenler. Dolu → yalnızca bu koleksiyon adları (`collections` komutu listeler). CLI: run --collection AD",
-
   "llm": {
     "provider": "claude_code",
     "model": "",
@@ -24,24 +25,73 @@
   "_help_llm": [
     "provider=claude_code: Claude Code CLI (`claude -p`) — Claude Max/Pro aboneliğiyle çalışır, anahtar gerekmez. model: opus|sonnet|haiku (boş=varsayılan), effort: low|medium|high, exe: claude yolu (boşsa PATH).",
     "provider=anthropic: resmî API. model örn. claude-opus-5; anahtar api_key_env ortam değişkeninden ya da api_key alanından.",
-    "provider=openai_compatible: base_url + model (+api_key). Örn. OpenAI https://api.openai.com/v1 gpt-4o; Ollama http://localhost:11434/v1 qwen3-vl:8b (görsel analizi için vision modeli gerekir)."
+    "provider=openai_compatible: base_url + model (+api_key). Örn. OpenAI https://api.openai.com/v1 gpt-4o; Ollama http://localhost:11434/v1 qwen3-vl:8b (görsel analizi için vision modeli gerekir).",
+    "max_tokens: anthropic/openai_compatible yanıt sınırı. timeout: saniye (claude_code için en az 240 kullanılır)."
   ],
-
-  "analysis": {"frames_speech": 2, "frames_no_speech": 4, "max_images": 6, "max_edge": 800},
-  "_help_analysis": "Video başına LLM'e gönderilen kare sayısı (konuşmalı/konuşmasız), karusel için en fazla görsel, görsel uzun kenarı (px).",
-
-  "whisper": {"model": "large-v3", "device": "cuda", "compute_type": "float16", "beam_size": 5},
+  "analysis": {
+    "frames_speech": 2,
+    "frames_no_speech": 4,
+    "max_images": 6,
+    "max_edge": 800,
+    "language": "Türkçe"
+  },
+  "_help_analysis": "Video başına LLM'e gönderilen kare sayısı (konuşmalı/konuşmasız), karusel için en fazla görsel, görsel uzun kenarı (px). language: analiz metninin dili (örn. 'Türkçe', 'English'); Türkçe dışı dillerde İngilizce istem şablonu kullanılır.",
+  "report": {
+    "language": "tr"
+  },
+  "_help_report": "Rapor etiketlerinin dili: tr | en.",
+  "whisper": {
+    "model": "large-v3",
+    "device": "cuda",
+    "compute_type": "float16",
+    "beam_size": 5
+  },
   "_help_whisper": "faster-whisper. GPU yoksa device=cpu, compute_type=int8 (yavaş). Küçük model: medium / small.",
-
-  "pacing": {"max_posts_per_run": 40, "known_pages_to_stop": 3},
-  "_help_pacing": "Koşu başına yorumları çekilecek post sayısı; artımlı taramada tamamen bilinen kaç sayfadan sonra durulacağı.",
-
-  "video": {"keep_files": false, "dir": "data/videos"},
+  "pacing": {
+    "max_posts_per_run": 40,
+    "known_pages_to_stop": 3,
+    "before_nav": [
+      1.5,
+      3.0
+    ],
+    "between_scrolls": [
+      3.0,
+      6.5
+    ],
+    "between_posts": [
+      5.0,
+      10.0
+    ],
+    "between_fetches": [
+      2.0,
+      4.0
+    ]
+  },
+  "_help_pacing": "max_posts_per_run: koşu başına yorumları çekilecek post; known_pages_to_stop: artımlı taramada tamamen bilinen kaç sayfadan sonra durulacağı; diğerleri yalnızca source=browser bekleme aralıkları (sn).",
+  "comments": {
+    "pages": 1,
+    "visit_post_page": false
+  },
+  "_help_comments": "Yalnızca source=browser için: post sayfası her post için açılsın mı.",
+  "video": {
+    "keep_files": false,
+    "dir": "data/videos"
+  },
   "_help_video": "keep_files=false: video ve görseller analizden sonra silinir.",
-
-  "instagrapi": {"enabled": true, "username": "", "session_file": "data/instagrapi_session.json", "delay_range": [3, 7]},
+  "instagrapi": {
+    "enabled": true,
+    "username": "",
+    "session_file": "data/instagrapi_session.json",
+    "delay_range": [
+      3,
+      7
+    ]
+  },
   "_help_instagrapi": "Mobil API istemcisi. delay_range: istekler arası rastgele bekleme (sn). Oturum `ig-login` ile oluşur, şifre saklanmaz.",
-
-  "browser": {"channel": "chrome", "headless": false, "profile_dir": "data/chrome-profile"},
+  "browser": {
+    "channel": "chrome",
+    "headless": false,
+    "profile_dir": "data/chrome-profile"
+  },
   "_help_browser": "Yalnızca source=browser için."
 }

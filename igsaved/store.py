@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS posts (
     summary_status TEXT DEFAULT 'pending',
     comments_attempts INTEGER DEFAULT 0,
     video_attempts INTEGER DEFAULT 0,
+    analysis_attempts INTEGER DEFAULT 0,
     image_urls TEXT,
     collections TEXT,
     analysis_meta TEXT,
@@ -68,6 +69,7 @@ CREATE TABLE IF NOT EXISTS runs (
 POST_COLUMNS_ADDED_LATER = {
     "comments_attempts": "INTEGER DEFAULT 0",
     "video_attempts": "INTEGER DEFAULT 0",
+    "analysis_attempts": "INTEGER DEFAULT 0",
     "image_urls": "TEXT",
     "collections": "TEXT",
     "analysis_meta": "TEXT",
@@ -170,7 +172,7 @@ class Store:
 
     def bump(self, shortcode: str, column: str) -> int:
         """Deneme sayacını artırır (comments_attempts / video_attempts); yeni değeri döner."""
-        assert column in ("comments_attempts", "video_attempts")
+        assert column in ("comments_attempts", "video_attempts", "analysis_attempts")
         self.conn.execute(
             f"UPDATE posts SET {column}=COALESCE({column},0)+1, updated_at=? WHERE shortcode=?",
             (int(time.time()), shortcode),

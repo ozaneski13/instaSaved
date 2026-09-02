@@ -26,7 +26,7 @@ def _client(cfg: Config):
 def interactive_login(cfg: Config) -> str:
     import getpass
 
-    username = cfg.get("instagrapi", "username") or input("Instagram kullanıcı adı: ").strip()
+    username = cfg.get("instagrapi", "username") or cfg.get("username") or input("Instagram kullanıcı adı: ").strip()
     password = getpass.getpass("Instagram şifresi (ekranda görünmez, saklanmaz): ")
     cl, session_file = _client(cfg)
     code = ""
@@ -54,7 +54,7 @@ def session_available(cfg: Config) -> bool:
 def fetch_comments_raw(cfg: Config, pk: str) -> dict:
     cl, session_file = _client(cfg)
     if not session_file.exists():
-        raise SessionMissing("instagrapi oturum dosyası yok; önce `run.cmd ig-login` (menü 8) çalıştır.")
+        raise SessionMissing("instagrapi oturum dosyası yok; önce `run.cmd ig-login` (menü 1) çalıştır.")
     return cl.private_request(
         f"media/{pk}/comments/",
         params={"can_support_threading": "true", "permalink_enabled": "false"},

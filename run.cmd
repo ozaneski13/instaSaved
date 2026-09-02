@@ -34,12 +34,20 @@ if "%SECIM%"=="1" "%PY%" -m igsaved ig-login
 if "%SECIM%"=="2" "%PY%" -m igsaved collections
 if "%SECIM%"=="3" "%PY%" -m igsaved run --limit 3
 if "%SECIM%"=="4" "%PY%" -m igsaved run
-if "%SECIM%"=="5" ( set /p "COLS=Koleksiyon adi: " ) & if "%SECIM%"=="5" "%PY%" -m igsaved run --collection "%COLS%"
+if "%SECIM%"=="5" goto col5
 if "%SECIM%"=="6" "%PY%" -m igsaved process --redo & if "%SECIM%"=="6" "%PY%" -m igsaved report
 if "%SECIM%"=="7" "%PY%" -m igsaved status
 if "%SECIM%"=="8" "%PY%" -m igsaved report
 if "%SECIM%"=="9" "%PY%" -m igsaved login
+:done
 echo.
 echo [Bitti, cikis kodu %ERRORLEVEL%] - devam icin bir tusa bas
 pause >nul
 goto menu
+
+:col5
+set "COLS="
+set /p "COLS=Koleksiyon adi: "
+if "%COLS%"=="" goto done
+"%PY%" -m igsaved run --collection "%COLS%"
+goto done

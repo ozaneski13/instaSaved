@@ -136,6 +136,8 @@ def collect_comments_api(source, store: Store, post: dict) -> CommentsOutcome:
     res = parse_comments_v1(data)
     if res.count_mismatch:
         log.warning("%s: pinned_comment_count=%s ama ilk sayfada %d sabitli", shortcode, res.pinned_count, len(res.pinned))
+        return CommentsOutcome("ok", "partial", "instagrapi", res,
+                               note=f"pinned_comment_count={res.pinned_count}, ilk sayfada {len(res.pinned)} bulundu")
     return CommentsOutcome("ok", "ok", "instagrapi", res)
 
 
@@ -168,7 +170,7 @@ def collect_comments(browser: IGBrowser, store: Store, cfg: Config, post: dict) 
         if not ig_private.session_available(cfg):
             global _IG_SESSION_WARNED
             if not _IG_SESSION_WARNED:
-                log.warning("instagrapi açık ama oturum dosyası yok; sabitli yorumlar için `run.cmd ig-login` (menü 8). Web yoluna devam.")
+                log.warning("instagrapi açık ama oturum dosyası yok; sabitli yorumlar için `run.cmd ig-login` (menü 1). Web yoluna devam.")
                 _IG_SESSION_WARNED = True
         try:
             if not ig_private.session_available(cfg):

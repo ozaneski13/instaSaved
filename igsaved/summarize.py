@@ -27,6 +27,14 @@ SYSTEM_TR = (
     "Yalnızca özeti yaz; başlık, madde işareti, giriş cümlesi, emoji ekleme. Transkript ya da yazılar başka dildeyse "
     "yine Türkçe özetle. Görselleri göremiyorsan bunu tek kelimeyle belirt ve açıklamaya dayan."
 )
+SYSTEM_EN_TEMPLATE = (
+    "You analyze Instagram posts. You receive the post type (photo, carousel or video), its caption, a speech "
+    "transcript when there is one, and images/frames taken from the post. Summarize what the post is about and what it "
+    "shows in 2-4 sentences, written in {language}, plain and informative: the topic, the place/product/person/event "
+    "shown, any advice or information given, important on-screen text (briefly). Output only the summary; no title, "
+    "bullets, preamble or emoji. Translate if the transcript or text is in another language. If you cannot see the "
+    "images, say so in one word and rely on the caption."
+)
 NO_SPEECH_TEXT = "Konuşma yok (müzik/sessiz video)."
 NO_VIDEO_TEXT = "Video yok (fotoğraf/karusel)."
 
@@ -169,8 +177,16 @@ def make_provider(cfg: Config) -> LLMProvider:
     raise ProviderUnavailable(f"Bilinmeyen llm.provider: {provider} (claude_code | anthropic | openai_compatible)")
 
 
+def _is_turkish(language_out: str) -> bool:
+    return (language_out or "").strip().lower() in ("", "tr", "türkçe", "turkce", "turkish")
+
+
+def system_prompt(language_out: str = "Türkçe") -> str:
+    return SYSTEM_TR if _is_turkish(language_out) else SYSTEM_EN_TEMPLATE.format(language=language_out)
+
+
 def build_user_prompt(kind: str, author: str | None, caption: str | None, transcript: str, language: str | None,
-                      n_images: int = 0, note: str = "") -> str:
+                      n_images: int = 0, note: str = "", language_out: str = "Türkçe") -> str:
     parts = [f"Gönderi türü: {kind}"]
     if author:
         parts.append(f"Hesap: @{author}")
@@ -179,13 +195,17 @@ def build_user_prompt(kind: str, author: str | None, caption: str | None, transc
         parts.append(f"Konuşma transkripti (dil: {language or 'bilinmiyor'}):\n{transcript.strip() if transcript else '(konuşma yok)'}")
     if n_images:
         parts.append(f"Ekli görsel sayısı: {n_images}" + (f" ({note})" if note else ""))
-    parts.append("Gönderide ne anlatılıyor / gösteriliyor? 2-4 cümle, Türkçe.")
+    if _is_turkish(language_out):
+        parts.append("Gönderide ne anlatılıyor / gösteriliyor? 2-4 cümle, Türkçe.")
+    else:
+        parts.append(f"What is this post about and what does it show? 2-4 sentences, in {language_out}.")
     return "\n\n".join(parts)
 
 
 def analyze(provider: LLMProvider, kind: str, author: str | None, caption: str | None, transcript: str,
-            language: str | None, images: Sequence[Path] = (), note: str = "") -> str:
-    return provider.complete(SYSTEM_TR, build_user_prompt(kind, author, caption, transcript, language, len(images), note), images)
+            language: str | None, images: Sequence[Path] = (), note: str = "", language_out: str = "Türkçe") -> str:
+    user = build_user_prompt(kind, author, caption, transcript, language, len(images), note, language_out)
+    return provider.complete(system_prompt(language_out), user, images)
 
 
 def summarize(provider: LLMProvider, author: str | None, caption: str | None, transcript: str, language: str | None) -> str:

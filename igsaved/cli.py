@@ -388,7 +388,8 @@ def _analyze_one(cfg: Config, store: Store, provider, transcriber: Transcriber, 
         kind = _kind_label(post)
         note = ", ".join(x for x in [f"{len(frames)} video karesi" if frames else "", f"{len(images)} fotoğraf" if images else ""] if x)
         summary = analyze(provider, kind, post.get("author"), post.get("caption"), transcript,
-                          langs[0] if langs else None, images=frames + images, note=note)
+                          langs[0] if langs else None, images=frames + images, note=note,
+                          language_out=cfg.get("analysis", "language") or "Türkçe")
         if not summary:
             raise RuntimeError("LLM boş yanıt döndü")
         store.update(code, summary=summary, summary_status="ok", error=None,
@@ -404,14 +405,17 @@ def _analyze_one(cfg: Config, store: Store, provider, transcriber: Transcriber, 
         store.bump(code, "video_attempts")
     except Exception as exc:
         log.exception("%s: analiz hatası", code)
+        attempts = store.bump(code, "analysis_attempts")
         store.update(code, summary_status="failed", error=str(exc)[:500])
+        if attempts >= MAX_ATTEMPTS:
+            log.error("%s: analiz %d kez başarısız; `process --redo` ile sıfırlanana kadar atlanacak", code, attempts)
     finally:
         media_mod.cleanup(temp_files)
 
 
 def cmd_process(cfg: Config, store: Store, limit: int | None, no_summary: bool, redo: bool = False) -> int:
     if redo:
-        n = store.conn.execute("UPDATE posts SET summary_status='pending' WHERE details_status='ok'").rowcount
+        n = store.conn.execute("UPDATE posts SET summary_status='pending', analysis_attempts=0 WHERE details_status='ok'").rowcount
         store.conn.commit()
         log.info("Yeniden analiz: %d post kuyruğa alındı", n)
     provider = None
@@ -432,7 +436,8 @@ def cmd_process(cfg: Config, store: Store, limit: int | None, no_summary: bool, 
     tmp_dir.mkdir(parents=True, exist_ok=True)
     video_dir: Path = cfg.path("video", "dir")
     rows = store.pending("summary_status", limit=limit,
-                         where_extra=f"AND details_status='ok' AND COALESCE(video_attempts,0) < {MAX_ATTEMPTS}")
+                         where_extra=f"AND details_status='ok' AND COALESCE(video_attempts,0) < {MAX_ATTEMPTS} "
+                                     f"AND COALESCE(analysis_attempts,0) < {MAX_ATTEMPTS}")
     log.info("Analiz aşaması: %d post", len(rows))
     for post in rows:
         try:
@@ -445,7 +450,7 @@ def cmd_process(cfg: Config, store: Store, limit: int | None, no_summary: bool, 
 
 # --------------------------------------------------------------------------- rapor / durum / probe / demo
 def cmd_report(cfg: Config, store: Store) -> int:
-    md, js = write_reports(store, cfg.output_dir)
+    md, js = write_reports(store, cfg.output_dir, lang=cfg.get("report", "language") or "tr")
     print(f"Rapor yazıldı:\n  {md}\n  {js}")
     return EXIT_OK
 

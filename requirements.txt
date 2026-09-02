@@ -8,3 +8,4 @@ anthropic
 instagrapi==2.18.18
 pytest
 pillow>=10
+av>=12

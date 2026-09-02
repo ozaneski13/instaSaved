@@ -187,3 +187,69 @@ def test_store_migration_adds_v2_columns(tmp_path):
     s = Store(db)
     cols = {row[1] for row in s.conn.execute("PRAGMA table_info(posts)")}
     assert {"image_urls", "collections", "analysis_meta", "video_attempts"} <= cols
+
+
+def test_report_english_labels():
+    post = {"shortcode": "E1", "author": "u", "media_type": 2, "has_video": 1, "no_speech": 0, "language": "en",
+            "transcript": "a b c", "summary": "Summary.", "summary_status": "ok", "analysis_meta": json.dumps({"frames": 2}),
+            "pinned_status": "ok", "pinned_json": json.dumps([{"username": "x", "text": "pin"}]), "details_status": "ok",
+            "comments_status": "ok", "video_status": "ok", "transcript_status": "ok"}
+    md = render_markdown([post], lang="en")
+    assert "# Instagram Saved Posts — Content Digest" in md and "[Open post]" in md
+    assert "- **Content:** Summary. _(video, language: en, 3-word transcript, 2 images inspected)_" in md
+    assert "- **Pinned comments:**" in md and "     - @x: pin" in md
+    assert "- **Caption:** —" in md
+
+
+def test_partial_pinned_status_rendered():
+    post = {"shortcode": "P1", "author": "u", "media_type": 1, "has_video": 0, "summary": "S", "summary_status": "ok",
+            "pinned_status": "partial", "pinned_json": json.dumps([{"username": "o", "text": "one"}]), "details_status": "ok",
+            "comments_status": "ok", "video_status": "no_video", "transcript_status": "no_video"}
+    md = render_markdown([post])
+    assert "     - @o: one" in md and "ilk sayfada 1 bulundu" in md
+
+
+def test_collect_comments_api_partial_on_count_mismatch(tmp_path):
+    s = Store(tmp_path / "s.db")
+    run = s.start_run("t")
+    s.upsert_from_feed(PostRecord(shortcode="M", pk="5"), run, 1)
+    src = FakeSource(pages={}, comments={"5": {"comments": [{"pk": 1, "text": "p", "user": {"username": "o"}, "is_pinned": True}],
+                                              "pinned_comment_count": 2}})
+    out = collect_comments_api(src, s, s.get("M"))
+    assert out.status == "ok" and out.pinned_status == "partial" and "ilk sayfada 1" in out.note
+
+
+def test_analysis_attempts_cap(tmp_path):
+    from igsaved.config import Config
+    from igsaved.transcribe import Transcriber
+
+    class Boom:
+        name = "boom"
+        model = "x"
+
+        def complete(self, system, user, images=()):
+            raise RuntimeError("provider down")
+
+    cfg = Config.load(None)
+    cfg.raw["data_dir"] = str(tmp_path / "data")
+    cfg.raw["video"]["dir"] = str(tmp_path / "videos")
+    cfg.raw["instagrapi"]["session_file"] = str(tmp_path / "none.json")
+    s = Store(tmp_path / "s.db")
+    run = s.start_run("t")
+    s.upsert_from_feed(PostRecord(shortcode="PH", pk="1", media_type=1, image_urls=["https://cdn/x.jpg"]), run, 1)
+    import igsaved.cli as c
+    calls = []
+    monkeypatch.setattr(c.video_mod, "download", lambda url, dest: (calls.append(url), dest.write_bytes(b"x"), dest)[2])
+    monkeypatch.setattr(c.media_mod, "prepare_image", lambda src, dest, max_edge: (dest.write_bytes(b"jpg"), dest)[1])
+    tmp = tmp_path / "tmp"; tmp.mkdir()
+    for expected in (1, 2, 3):
+        c._analyze_one(cfg, s, Boom(), Transcriber(cfg), None, s.get("PH"), tmp, tmp_path / "videos")
+        row = s.get("PH")
+        assert row["analysis_attempts"] == expected and row["summary_status"] == "failed"
+    assert s.pending("summary_status", where_extra="AND COALESCE(analysis_attempts,0) < 3") == []
+
+
+def test_system_prompt_language_switch():
+    from igsaved.summarize import build_user_prompt, system_prompt
+    assert "Türkçe" in system_prompt("Türkçe") and "in English" in system_prompt("English")
+    assert build_user_prompt("photo", None, "c", "", None, language_out="English").endswith("2-4 sentences, in English.")
