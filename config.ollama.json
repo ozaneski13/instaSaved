@@ -1,0 +1,19 @@
+{
+  "username": "",
+  "llm": {
+    "provider": "openai_compatible",
+    "model": "gemma4:latest",
+    "base_url": "http://localhost:11434/v1",
+    "api_key_env": ""
+  },
+  "pacing": {
+    "max_posts_per_run": 40
+  },
+  "video": {
+    "keep_files": false
+  },
+  "instagrapi": {
+    "enabled": false,
+    "username": ""
+  }
+}

@@ -1,0 +1,18 @@
+# sanal ortam
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# kişisel veri ve gizli bilgiler — ASLA commit etme
+data/
+output/
+config.json
+*.db
+*.db-wal
+*.db-shm
+*.log
+instagrapi_session.json
+
+# oturuma özel notlar
+SABAH-NOTU.md

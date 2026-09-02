@@ -1,0 +1,10 @@
+playwright>=1.50
+faster-whisper>=1.1.0
+ctranslate2>=4.7.0
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+requests>=2.32
+anthropic
+instagrapi==2.18.18
+pytest
+pillow>=10
