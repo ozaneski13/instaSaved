@@ -219,7 +219,7 @@ def test_collect_comments_api_partial_on_count_mismatch(tmp_path):
     assert out.status == "ok" and out.pinned_status == "partial" and "ilk sayfada 1" in out.note
 
 
-def test_analysis_attempts_cap(tmp_path):
+def test_analysis_attempts_cap(tmp_path, monkeypatch):
     from igsaved.config import Config
     from igsaved.transcribe import Transcriber
 
