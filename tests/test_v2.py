@@ -253,3 +253,101 @@ def test_system_prompt_language_switch():
     from igsaved.summarize import build_user_prompt, system_prompt
     assert "Türkçe" in system_prompt("Türkçe") and "in English" in system_prompt("English")
     assert build_user_prompt("photo", None, "c", "", None, language_out="English").endswith("2-4 sentences, in English.")
+
+
+# --- gönderiye eklenen konum etiketi -------------------------------------------------
+def _loc_media(code="LC1", **over):
+    m = {"pk": 9, "code": code, "media_type": 1, "caption": {"text": "c"}, "user": {"username": "u"},
+         "image_versions2": {"candidates": [{"width": 1, "height": 1, "url": "https://cdn/x.jpg"}]},
+         "location": {"pk": 100847574753640, "name": "Tokyo, Japan", "short_name": "Tokyo", "address": "",
+                      "city": "", "lat": 35.664036, "lng": 139.698211, "external_source": "facebook_places"}}
+    m.update(over)
+    return m
+
+
+def test_parse_location_from_feed_item():
+    rec = parse_feed_item({"media": _loc_media()})
+    assert rec.location == {"name": "Tokyo, Japan", "short_name": "Tokyo", "lat": 35.664036, "lng": 139.698211,
+                            "pk": "100847574753640"}
+    assert parse_feed_item(_loc_media("NOLOC", location=None)).location is None
+    assert parse_feed_item(_loc_media("EMPTY", location={"pk": 1})).location is None
+    detailed = parse_feed_item(_loc_media("ADDR", location={"name": "Mr.hiro", "address": "大正区泉尾4丁目", "city": "Osaka"}))
+    assert detailed.location == {"name": "Mr.hiro", "address": "大正区泉尾4丁目", "city": "Osaka"}
+
+
+def test_location_persisted_and_not_lost(tmp_path):
+    s = Store(tmp_path / "s.db")
+    run = s.start_run("t")
+    rec = parse_feed_item({"media": _loc_media()})
+    s.upsert_from_feed(rec, run, 1)
+    assert json.loads(s.get("LC1")["location"])["name"] == "Tokyo, Japan"
+    s.upsert_from_feed(PostRecord(shortcode="LC1", pk="9", caption="yeni"), run, 1)  # konumsuz güncelleme silmemeli
+    assert json.loads(s.get("LC1")["location"])["name"] == "Tokyo, Japan"
+
+
+def test_location_in_report_and_json():
+    post = {"shortcode": "LC1", "author": "u", "media_type": 1, "has_video": 0, "summary": "S.", "summary_status": "ok",
+            "location": json.dumps({"name": "Universal Studios Japan", "city": "Osaka", "lat": 34.6647, "lng": 135.433}),
+            "pinned_status": "ok", "pinned_json": "[]", "details_status": "ok", "comments_status": "ok",
+            "video_status": "no_video", "transcript_status": "no_video"}
+    md = render_markdown([post])
+    assert "   - **Konum:** Universal Studios Japan — Osaka ([haritada aç](https://www.google.com/maps/search/?api=1&query=34.6647,135.433))" in md
+    assert "**Location:** Universal Studios Japan — Osaka ([open in maps]" in render_markdown([post], lang="en")
+    assert render_json([post])[0]["location"]["name"] == "Universal Studios Japan"
+    assert "Konum" not in render_markdown([dict(post, location=None)])
+
+
+def test_location_reaches_llm_prompt(tmp_path):
+    p = FakeProvider()
+    analyze(p, "fotoğraf", "u", "cap", "", None, location={"name": "Tokyo, Japan", "city": "Tokyo"})
+    assert "Gönderiye eklenen konum etiketi: Tokyo, Japan — Tokyo" in p.calls[0][1]
+    p2 = FakeProvider()
+    analyze(p2, "photo", "u", "cap", "", None, location={"name": "Tokyo"}, language_out="English")
+    assert "Location tagged on the post: Tokyo" in p2.calls[0][1]
+    p3 = FakeProvider()
+    analyze(p3, "fotoğraf", "u", "cap", "", None)
+    assert "konum" not in p3.calls[0][1].lower()
+
+
+# --- yeniden analiz güvenliği ---------------------------------------------------------
+def test_redo_without_provider_keeps_summaries(tmp_path, monkeypatch):
+    from igsaved.config import Config
+    from igsaved.summarize import ProviderUnavailable
+
+    cfg = Config.load(None)
+    cfg.raw["data_dir"] = str(tmp_path / "data")
+    cfg.raw["instagrapi"]["session_file"] = str(tmp_path / "none.json")
+    s = Store(tmp_path / "s.db")
+    run = s.start_run("t")
+    s.upsert_from_feed(PostRecord(shortcode="A", pk="1", media_type=1, image_urls=["u"]), run, 1)
+    s.update("A", summary="Eski özet.", summary_status="ok", details_status="ok")
+    monkeypatch.setattr(cli, "make_provider", lambda cfg: (_ for _ in ()).throw(ProviderUnavailable("yok")))
+    assert cli.cmd_process(cfg, s, None, False, redo=True) == cli.EXIT_ERROR
+    row = s.get("A")
+    assert row["summary"] == "Eski özet." and row["summary_status"] == "ok"   # dokunulmadı
+
+
+def test_report_shows_summary_even_when_status_pending():
+    post = {"shortcode": "S1", "author": "u", "media_type": 1, "has_video": 0, "summary": "Eski özet.",
+            "summary_status": "pending", "pinned_status": "ok", "pinned_json": "[]", "details_status": "ok",
+            "comments_status": "ok", "video_status": "no_video", "transcript_status": "no_video"}
+    md = render_markdown([post])
+    assert "Eski özet. _(fotoğraf)_ _(yeniden analiz bekliyor)_" in md
+    assert "Henüz işlenmedi" not in md
+    assert "_(awaiting re-analysis)_" in render_markdown([post], lang="en")
+
+
+def test_find_claude_cli_falls_back_to_npm_dir(tmp_path, monkeypatch):
+    import shutil as sh
+    from igsaved import summarize as sm
+
+    monkeypatch.setattr(sm.shutil if hasattr(sm, "shutil") else sh, "which", lambda name: None, raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    npm = tmp_path / "npm"
+    npm.mkdir()
+    (npm / "claude.cmd").write_text("@echo off", encoding="utf-8")
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    assert sm.find_claude_cli() == str(npm / "claude.cmd")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "bos"))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "bos")
+    assert sm.find_claude_cli() == ""

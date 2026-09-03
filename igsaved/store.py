@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS posts (
     video_attempts INTEGER DEFAULT 0,
     analysis_attempts INTEGER DEFAULT 0,
     image_urls TEXT,
+    location TEXT,
     collections TEXT,
     analysis_meta TEXT,
     error TEXT,
@@ -71,6 +72,7 @@ POST_COLUMNS_ADDED_LATER = {
     "video_attempts": "INTEGER DEFAULT 0",
     "analysis_attempts": "INTEGER DEFAULT 0",
     "image_urls": "TEXT",
+    "location": "TEXT",
     "collections": "TEXT",
     "analysis_meta": "TEXT",
 }
@@ -126,12 +128,14 @@ class Store:
         if existing is None:
             self.conn.execute(
                 """INSERT INTO posts(shortcode, pk, author, taken_at, first_seen_run, feed_position, caption,
-                   media_type, product_type, has_video, video_urls, image_urls, comment_count, details_status, updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   media_type, product_type, has_video, video_urls, image_urls, location, comment_count,
+                   details_status, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     rec.shortcode, rec.pk, rec.author, rec.taken_at, run_id, position, rec.caption,
                     rec.media_type, rec.product_type, int(rec.has_video), json.dumps(rec.video_urls),
-                    json.dumps(rec.image_urls), rec.comment_count, "ok" if rec.pk else "pending", now,
+                    json.dumps(rec.image_urls), json.dumps(rec.location, ensure_ascii=False) if rec.location else None,
+                    rec.comment_count, "ok" if rec.pk else "pending", now,
                 ),
             )
             self.conn.commit()
@@ -141,12 +145,14 @@ class Store:
                caption=COALESCE(?, caption), media_type=COALESCE(?, media_type), product_type=COALESCE(?, product_type),
                has_video=MAX(has_video, ?), video_urls=CASE WHEN ? != '[]' THEN ? ELSE video_urls END,
                image_urls=CASE WHEN ? != '[]' THEN ? ELSE image_urls END,
+               location=COALESCE(?, location),
                comment_count=COALESCE(?, comment_count), details_status=CASE WHEN ? IS NOT NULL THEN 'ok' ELSE details_status END,
                updated_at=? WHERE shortcode=?""",
             (
                 rec.pk, rec.author, rec.taken_at, rec.caption, rec.media_type, rec.product_type,
                 int(rec.has_video), json.dumps(rec.video_urls), json.dumps(rec.video_urls),
-                json.dumps(rec.image_urls), json.dumps(rec.image_urls), rec.comment_count,
+                json.dumps(rec.image_urls), json.dumps(rec.image_urls),
+                json.dumps(rec.location, ensure_ascii=False) if rec.location else None, rec.comment_count,
                 rec.pk, now, rec.shortcode,
             ),
         )
@@ -211,6 +217,16 @@ class Store:
             for row in self.conn.execute(f"SELECT {col}, COUNT(*) FROM posts GROUP BY {col}"):
                 out[f"{col}:{row[0]}"] = row[1]
         return out
+
+
+def loads_dict(value: str | None) -> dict | None:
+    if not value:
+        return None
+    try:
+        data = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def loads_list(value: str | None) -> list:

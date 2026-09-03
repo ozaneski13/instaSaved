@@ -26,7 +26,7 @@ from .ig_source import CollectionInfo, IGSource
 from .parsers import PostRecord, extract_shortcode, parse_feed_item
 from .report import write_reports
 from .saved_feed import enumerate_saved, enumerate_saved_api
-from .store import Store, loads_list
+from .store import Store, loads_dict, loads_list
 from .summarize import ProviderUnavailable, analyze, make_provider
 from .transcribe import Transcriber
 
@@ -135,6 +135,8 @@ def _apply_media(store: Store, shortcode: str, media: dict, kind: str = "post_me
         fields["has_video"] = 1
     if rec.image_urls:
         fields["image_urls"] = json.dumps(rec.image_urls)
+    if rec.location:
+        fields["location"] = json.dumps(rec.location, ensure_ascii=False)
     store.update(shortcode, **{k: v for k, v in fields.items() if v is not None})
     return store.get(shortcode)
 
@@ -389,7 +391,8 @@ def _analyze_one(cfg: Config, store: Store, provider, transcriber: Transcriber, 
         note = ", ".join(x for x in [f"{len(frames)} video karesi" if frames else "", f"{len(images)} fotoğraf" if images else ""] if x)
         summary = analyze(provider, kind, post.get("author"), post.get("caption"), transcript,
                           langs[0] if langs else None, images=frames + images, note=note,
-                          language_out=cfg.get("analysis", "language") or "Türkçe")
+                          language_out=cfg.get("analysis", "language") or "Türkçe",
+                          location=loads_dict(post.get("location")))
         if not summary:
             raise RuntimeError("LLM boş yanıt döndü")
         store.update(code, summary=summary, summary_status="ok", error=None,
@@ -414,10 +417,6 @@ def _analyze_one(cfg: Config, store: Store, provider, transcriber: Transcriber, 
 
 
 def cmd_process(cfg: Config, store: Store, limit: int | None, no_summary: bool, redo: bool = False) -> int:
-    if redo:
-        n = store.conn.execute("UPDATE posts SET summary_status='pending', analysis_attempts=0 WHERE details_status='ok'").rowcount
-        store.conn.commit()
-        log.info("Yeniden analiz: %d post kuyruğa alındı", n)
     provider = None
     if not no_summary:
         try:
@@ -425,6 +424,15 @@ def cmd_process(cfg: Config, store: Store, limit: int | None, no_summary: bool, 
             log.info("Analiz sağlayıcısı: %s / %s", provider.name, getattr(provider, "model", "") or "varsayılan model")
         except ProviderUnavailable as exc:
             log.warning("Analiz atlanacak (yalnızca transkript): %s", exc)
+    if redo:
+        # Sağlayıcı yoksa yeniden kuyruğa ALMA: aksi halde eldeki özetler "işlenmedi" durumuna düşer ve
+        # analiz üretilemediği için orada kalır (veri kaybı gibi görünür).
+        if provider is None:
+            log.error("Yeniden analiz iptal: analiz sağlayıcısı hazır değil; mevcut özetler korundu.")
+            return EXIT_ERROR
+        n = store.conn.execute("UPDATE posts SET summary_status='pending', analysis_attempts=0 WHERE details_status='ok'").rowcount
+        store.conn.commit()
+        log.info("Yeniden analiz: %d post kuyruğa alındı", n)
     source: IGSource | None = None
     if not _use_browser(cfg):
         try:

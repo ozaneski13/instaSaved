@@ -24,6 +24,7 @@ SYSTEM_TR = (
     "açıklaması (caption), varsa konuşma transkripti ve gönderiden alınan görseller/kareler verilir. Görevin: "
     "gönderide ne anlatıldığını ve gösterildiğini 2-4 cümleyle, Türkçe, sade ve bilgi odaklı özetlemek: konu, "
     "gösterilen yer/ürün/kişi/olay, verilen bilgi ya da tavsiye, görsellerdeki önemli yazılar (varsa kısaca). "
+    "Gönderiye konum etiketi eklenmişse ve içerikle ilgiliyse yerin adını özette geçir. "
     "Yalnızca özeti yaz; başlık, madde işareti, giriş cümlesi, emoji ekleme. Transkript ya da yazılar başka dildeyse "
     "yine Türkçe özetle. Görselleri göremiyorsan bunu tek kelimeyle belirt ve açıklamaya dayan."
 )
@@ -110,6 +111,35 @@ class OpenAICompatibleProvider:
         return (data["choices"][0]["message"].get("content") or "").strip()
 
 
+def find_claude_cli() -> str:
+    """`claude` çalıştırılabilirini bulur. PATH'te yoksa (Explorer'dan başlatılan pencereler eski PATH'i
+    taşıyabilir) bilinen npm/kullanıcı kurulum yollarına bakar."""
+    import os
+    import shutil
+    from pathlib import Path
+
+    for name in ("claude", "claude.cmd", "claude.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+    candidates = []
+    for env_var, rel in (("APPDATA", "npm"), ("LOCALAPPDATA", "npm"), ("ProgramFiles", "nodejs")):
+        base = os.environ.get(env_var)
+        if base:
+            candidates.append(Path(base) / rel)
+    home = Path.home()
+    candidates += [home / ".local" / "bin", home / "AppData" / "Roaming" / "npm", home / "bin", Path("/usr/local/bin")]
+    for directory in candidates:
+        for name in ("claude.cmd", "claude.exe", "claude"):
+            path = directory / name
+            try:
+                if path.is_file():
+                    return str(path)
+            except OSError:
+                continue
+    return ""
+
+
 class ClaudeCodeProvider:
     """Claude Code CLI (`claude -p`): kullanıcının Claude Max/Pro girişiyle çalışır, API anahtarı gerekmez.
     Görseller varsa yalnızca Read aracı açılır ve model dosyaları okuyup inceler."""
@@ -117,11 +147,13 @@ class ClaudeCodeProvider:
     name = "claude_code"
 
     def __init__(self, model: str = "", exe: str = "", timeout: float = 240.0, effort: str = ""):
-        import shutil
-
-        self.exe = exe or shutil.which("claude") or shutil.which("claude.cmd") or ""
+        self.exe = exe or find_claude_cli()
         if not self.exe:
-            raise ProviderUnavailable("`claude` komutu bulunamadı (npm i -g @anthropic-ai/claude-code) ya da config'te llm.exe ver.")
+            raise ProviderUnavailable(
+                "`claude` komutu bulunamadı. Claude Code CLI kurulu mu (npm i -g @anthropic-ai/claude-code)? "
+                "Kuruluysa config.json → llm.exe alanına tam yolunu yaz (ör. "
+                "C:/Users/<kullanıcı>/AppData/Roaming/npm/claude.cmd)."
+            )
         self.model = model
         self.timeout = timeout
         self.effort = effort
@@ -185,11 +217,26 @@ def system_prompt(language_out: str = "Türkçe") -> str:
     return SYSTEM_TR if _is_turkish(language_out) else SYSTEM_EN_TEMPLATE.format(language=language_out)
 
 
+def format_location(location: dict | None) -> str:
+    """Konum etiketini tek satıra çevirir: 'Mr.hiro Rent a Car — 大正区泉尾4丁目 (Osaka)'."""
+    if not location:
+        return ""
+    parts = [location.get("name") or ""]
+    extra = [v for v in (location.get("address"), location.get("city")) if v]
+    if extra:
+        parts.append(" — " + ", ".join(extra))
+    return "".join(parts).strip()
+
+
 def build_user_prompt(kind: str, author: str | None, caption: str | None, transcript: str, language: str | None,
-                      n_images: int = 0, note: str = "", language_out: str = "Türkçe") -> str:
+                      n_images: int = 0, note: str = "", language_out: str = "Türkçe",
+                      location: dict | None = None) -> str:
     parts = [f"Gönderi türü: {kind}"]
     if author:
         parts.append(f"Hesap: @{author}")
+    loc = format_location(location)
+    if loc:
+        parts.append(("Gönderiye eklenen konum etiketi: " if _is_turkish(language_out) else "Location tagged on the post: ") + loc)
     parts.append(f"Açıklama (caption):\n{caption.strip() if caption else '(yok)'}")
     if kind.startswith("video") or (transcript and transcript.strip()):
         parts.append(f"Konuşma transkripti (dil: {language or 'bilinmiyor'}):\n{transcript.strip() if transcript else '(konuşma yok)'}")
@@ -203,8 +250,9 @@ def build_user_prompt(kind: str, author: str | None, caption: str | None, transc
 
 
 def analyze(provider: LLMProvider, kind: str, author: str | None, caption: str | None, transcript: str,
-            language: str | None, images: Sequence[Path] = (), note: str = "", language_out: str = "Türkçe") -> str:
-    user = build_user_prompt(kind, author, caption, transcript, language, len(images), note, language_out)
+            language: str | None, images: Sequence[Path] = (), note: str = "", language_out: str = "Türkçe",
+            location: dict | None = None) -> str:
+    user = build_user_prompt(kind, author, caption, transcript, language, len(images), note, language_out, location)
     return provider.complete(system_prompt(language_out), user, images)
 
 

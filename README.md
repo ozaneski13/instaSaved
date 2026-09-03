@@ -1,7 +1,8 @@
 # instaSaved
 
 Turn your Instagram **Saved** posts into one readable digest. For every saved post the tool produces what the post
-is about (an LLM analysis of videos, photos and carousels), the caption, and the author's **pinned comments**.
+is about (an LLM analysis of videos, photos and carousels), the caption, the **location tagged on the post**, and the
+author's **pinned comments**.
 No browser is opened, runs are incremental, and everything is designed for a single user (developed on Windows 11
 with an NVIDIA GPU; CPU-only also works).
 
@@ -37,6 +38,7 @@ One entry per post in `output/saved_posts.md`. Report labels and analysis langua
 
 ```markdown
 6. **@jeffrey_in_nyc** · [Open post](https://www.instagram.com/p/Da_S-LVze42/) · 2026-07-20
+   - **Location:** Tokyo, Japan ([open in maps](https://www.google.com/maps/search/?api=1&query=35.664036,139.698211))
    - **Content:** A visitor's first trip to an otter café in Tokyo. The frames show the visitor wearing the
      café's pink protective apron with an otter climbing into their lap, while other otters roam the play area.
      The visitor talks about how cute the animals are and how they come up to cuddle.
@@ -53,7 +55,7 @@ With the defaults (`tr` / `Türkçe`) the same entry reads `[Postu aç]`, `**İ�
 a named collection.
 
 The same data is written field by field to `output/saved_posts.json` (url, author, caption, content_summary,
-transcript, language, pinned_comments, collections, statuses…) for feeding other tools.
+transcript, language, location, pinned_comments, collections, statuses…) for feeding other tools.
 
 Analysis by post type:
 
@@ -63,6 +65,10 @@ Analysis by post type:
 | Video without speech (music) | 4 frames + caption | What is shown, on-screen text |
 | Photo | The image itself + caption | What is shown, text in the image |
 | Carousel | Up to 6 images (+ any video children) + caption | Summary of the whole carousel (e.g. "list of 30 Japanese phrases") |
+
+**Location.** If the author tagged a place when publishing (Instagram's location field, not text inside the caption),
+it is stored and shown on its own line with a Google Maps link, and it is also given to the LLM as context so the
+analysis can name the place. Posts without a tag simply have no location line.
 
 ---
 
@@ -81,7 +87,8 @@ Analysis by post type:
 
 1. **Source (`ig_source.py`)** — Instagram's mobile API through `instagrapi`, used as raw JSON: saved posts
    (`feed/saved/posts/`), collections (`collections/list/`, `feed/collection/{id}/`), comments
-   (`media/{pk}/comments/`) and `media/{pk}/info/` to refresh expired media URLs. Instagram's throttling and
+   (`media/{pk}/comments/`) and `media/{pk}/info/` to refresh expired media URLs. The saved-feed item already carries
+   the post's `location` object (name, address, city, lat/lng), so no extra request is needed for it. Instagram's throttling and
    verification signals (`PleaseWaitFewMinutes`, `ChallengeRequired`, `LoginRequired`…) are mapped to a single
    **HardStop** exception: the program does not retry, persists its state and exits.
 2. **Parsing (`parsers.py`)** — pure functions covered by unit tests; they never touch Instagram. From a feed item:
@@ -257,6 +264,7 @@ labels. After changing either, run `process --redo` / `report`.
   "has_video": true,
   "media_type": 2,
   "collections": [],
+  "location": {"name": "Tokyo, Japan", "short_name": "Tokyo", "lat": 35.664036, "lng": 139.698211, "pk": "100847574753640"},
   "content_summary": "Tokyo'daki bir su samuru kafesine ...",
   "content_line": "... _(video, dil: en, 51 kelime transkript, 2 görsel incelendi)_",
   "transcript": "...",
@@ -286,7 +294,9 @@ labels. After changing either, run `process --redo` / `report`.
 - An expired or missing CDN URL (HTTP 403/404/410) is refreshed from the mobile API immediately and the download
   retried once (mobile API session required).
 - `process --redo` queues every post whose details are complete for re-analysis (transcripts are regenerated; videos are
-  re-downloaded unless `video.keep_files` kept a copy).
+  re-downloaded unless `video.keep_files` kept a copy). It refuses to run when the LLM provider is unavailable, so an
+  unreachable provider can never blank out the summaries you already have. A summary that is present is always shown in
+  the report, even while it is queued for re-analysis.
 - Older `state.db` files are completed automatically by a schema migration.
 
 ---
@@ -394,6 +404,7 @@ Instagram **Kaydedilenler** listendeki her gönderiyi tek bir okunabilir listeye
 
 ```markdown
 6. **@jeffrey_in_nyc** · [Postu aç](https://www.instagram.com/p/Da_S-LVze42/) · 2026-07-20
+   - **Konum:** Tokyo, Japan ([haritada aç](https://www.google.com/maps/search/?api=1&query=35.664036,139.698211))
    - **İçerik:** Tokyo'daki bir su samuru kafesine ilk kez giden bir ziyaretçinin deneyimi gösteriliyor.
      Karelerde kafenin verdiği pembe koruyucu önlüğü giymiş ziyaretçinin kucağına çıkan bir su samuru ve
      oyun alanında dolaşan diğer samurlar görünüyor. Ziyaretçi hayvanların ne kadar sevimli olduğunu anlatıyor.
@@ -417,6 +428,10 @@ Gönderi türüne göre analiz:
 | Fotoğraf | Görselin kendisi + caption | Ne gösterildiği, görseldeki yazılar |
 | Karusel | En fazla 6 görsel (+ varsa video çocukları) + caption | Bütün karuselin özeti (ör. "30 Japonca kalıp listesi") |
 
+**Konum.** Gönderi paylaşılırken bir yer etiketlendiyse (caption içindeki metin değil, Instagram'ın konum alanı)
+kaydedilir; raporda kendi satırında Google Haritalar bağlantısıyla gösterilir ve analiz sırasında LLM'e bağlam olarak
+verilir, böylece özet yerin adını kullanabilir. Etiketi olmayan gönderilerde konum satırı çıkmaz.
+
 ---
 
 ### Nasıl çalışır
@@ -434,7 +449,8 @@ Gönderi türüne göre analiz:
 
 1. **Kaynak (`ig_source.py`)** — Instagram'ın mobil API'si, `instagrapi` üzerinden ham JSON olarak:
    kaydedilenler (`feed/saved/posts/`), koleksiyonlar (`collections/list/`, `feed/collection/{id}/`),
-   yorumlar (`media/{pk}/comments/`) ve süresi dolan medya URL'lerini tazelemek için `media/{pk}/info/`.
+   yorumlar (`media/{pk}/comments/`) ve süresi dolan medya URL'lerini tazelemek için `media/{pk}/info/`. Kaydedilenler
+   yanıtı gönderinin `location` nesnesini (ad, adres, şehir, enlem/boylam) zaten taşır; konum için ek istek gerekmez.
    Instagram'ın sınırlama/doğrulama sinyalleri (`PleaseWaitFewMinutes`, `ChallengeRequired`, `LoginRequired`…)
    tek bir **HardStop** istisnasına çevrilir: program yeniden denemez, durumu kaydeder ve çıkar.
 2. **Ayrıştırma (`parsers.py`)** — saf fonksiyonlar; Instagram'a dokunmaz, birim testleriyle korunur. Feed öğesinden
@@ -628,7 +644,9 @@ Sağlayıcı değiştirdikten sonra eski analizleri yenilemek için `run.cmd pro
 - Süresi dolan ya da kaybolan CDN URL'si (HTTP 403/404/410) anında mobil API'den tazelenir ve indirme bir kez daha
   denenir (mobil API oturumu gerekir).
 - `process --redo` detayları tamam olan tüm gönderileri yeniden analiz kuyruğuna alır (transkriptler yeniden üretilir;
-  `video.keep_files` ile saklanmış video varsa yeniden indirilmez).
+  `video.keep_files` ile saklanmış video varsa yeniden indirilmez). LLM sağlayıcısı hazır değilse çalışmayı reddeder;
+  böylece erişilemeyen bir sağlayıcı eldeki özetleri boşaltamaz. Var olan özet, yeniden analiz kuyruğundayken bile
+  raporda gösterilir.
 - Şema değişikliklerinde eski `state.db` otomatik migrasyonla tamamlanır.
 
 ---

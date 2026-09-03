@@ -54,6 +54,7 @@ class PostRecord:
     has_video: bool = False
     video_urls: list[str] = field(default_factory=list)
     image_urls: list[str] = field(default_factory=list)
+    location: dict | None = None
     saved_collection_ids: list[str] = field(default_factory=list)
     comment_count: int | None = None
     like_count: int | None = None
@@ -123,6 +124,28 @@ def collect_image_urls(media: dict) -> list[str]:
     return [u] if u else []
 
 
+def parse_location(media: dict) -> dict | None:
+    """Gönderi paylaşılırken eklenen konum etiketi (caption'daki metin değil).
+    Instagram şekli: media["location"] = {pk, name, short_name, address, city, lat, lng, external_source}."""
+    loc = media.get("location")
+    if not isinstance(loc, dict):
+        return None
+    name = fix_mojibake(loc.get("name") or loc.get("short_name") or "")
+    if not name:
+        return None
+    out = {"name": name}
+    for src, dst in (("short_name", "short_name"), ("address", "address"), ("city", "city")):
+        value = fix_mojibake(loc.get(src) or "")
+        if value and value != name:
+            out[dst] = value
+    for key in ("lat", "lng"):
+        if isinstance(loc.get(key), (int, float)):
+            out[key] = loc[key]
+    if loc.get("pk") is not None:
+        out["pk"] = str(loc["pk"])
+    return out
+
+
 def parse_feed_item(item: dict) -> PostRecord | None:
     media = _unwrap_media(item)
     code = media.get("code")
@@ -148,6 +171,7 @@ def parse_feed_item(item: dict) -> PostRecord | None:
         has_video=bool(video_urls) or media.get("media_type") == MEDIA_TYPE_VIDEO,
         video_urls=video_urls,
         image_urls=collect_image_urls(media),
+        location=parse_location(media),
         saved_collection_ids=[str(x) for x in (media.get("saved_collection_ids") or [])],
         comment_count=media.get("comment_count"),
         like_count=media.get("like_count"),

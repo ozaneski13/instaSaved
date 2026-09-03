@@ -5,13 +5,14 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .store import Store, loads_list
+from .store import Store, loads_dict, loads_list
 from .summarize import NO_SPEECH_TEXT, NO_VIDEO_TEXT  # noqa: F401
 
 LABELS = {
     "tr": {
         "title": "Instagram Kaydedilenler — İçerik Listesi", "updated": "Güncelleme", "total": "Toplam {n} post",
         "open": "Postu aç", "collection": "Koleksiyon", "content": "İçerik", "caption": "Açıklama", "pinned": "Sabitli yorumlar",
+        "location": "Konum", "map": "haritada aç", "stale": "_(yeniden analiz bekliyor)_",
         "no_pinned": "Sabitli yorum yok", "no_user": "(kullanıcı yok)", "dom_note": "_(sayfa etiketinden okundu)_",
         "partial_note": "_(sabitli sayısı {count}, ilk sayfada {found} bulundu)_",
         "unknown": "Belirlenemedi (web yanıtı sabitleme bilgisi vermiyor; instagrapi yedeği için SABAH-NOTU adım 2)",
@@ -23,6 +24,7 @@ LABELS = {
     "en": {
         "title": "Instagram Saved Posts — Content Digest", "updated": "Updated", "total": "{n} posts",
         "open": "Open post", "collection": "Collection", "content": "Content", "caption": "Caption", "pinned": "Pinned comments",
+        "location": "Location", "map": "open in maps", "stale": "_(awaiting re-analysis)_",
         "no_pinned": "No pinned comments", "no_user": "(no user)", "dom_note": "_(read from the page label)_",
         "partial_note": "_(pinned count {count}, {found} found on the first page)_",
         "unknown": "Undetermined (the web response carries no pin information; use the instagrapi source)",
@@ -84,8 +86,11 @@ def content_suffix(post: dict, lang: str = "tr") -> str:
 def video_line(post: dict, lang: str = "tr") -> str:
     """'İçerik' satırı: fotoğraf/karusel/video fark etmeksizin analiz özeti."""
     L = _labels(lang)
-    if post.get("summary_status") == "ok" and post.get("summary"):
-        return f"{post['summary'].strip()}{content_suffix(post, lang)}"
+    summary = (post.get("summary") or "").strip()
+    if summary:
+        # Durum 'ok' olmasa bile eldeki özet gösterilir (yeniden analiz kuyruğa alındıysa eski metin kaybolmasın).
+        stale = "" if post.get("summary_status") == "ok" else f" {L['stale']}"
+        return f"{summary}{content_suffix(post, lang)}{stale}"
     if post.get("has_video") and post.get("transcript_status") == "ok" and post.get("transcript"):
         return f"{L['awaiting']}{post['transcript'][:600]}"
     if post.get("summary_status") == "failed" or post.get("video_status") == "failed" or post.get("transcript_status") == "failed":
@@ -117,6 +122,21 @@ def pinned_lines(post: dict, lang: str = "tr") -> list[str]:
     return [L.get(status, status)]
 
 
+def location_line(post: dict, L: dict) -> str | None:
+    """Gönderiye eklenen konum etiketi; varsa haritaya bağlantı verilir."""
+    loc = loads_dict(post.get("location"))
+    if not loc or not loc.get("name"):
+        return None
+    text = loc["name"]
+    extra = [v for v in (loc.get("address"), loc.get("city")) if v]
+    if extra:
+        text += " — " + ", ".join(extra)
+    lat, lng = loc.get("lat"), loc.get("lng")
+    if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+        text += f" ([{L['map']}](https://www.google.com/maps/search/?api=1&query={lat},{lng}))"
+    return text
+
+
 def render_markdown(posts: list[dict], generated_at: datetime | None = None, lang: str = "tr") -> str:
     L = _labels(lang)
     generated_at = generated_at or datetime.now()
@@ -136,6 +156,9 @@ def render_markdown(posts: list[dict], generated_at: datetime | None = None, lan
         cols = loads_list(post.get("collections"))
         if cols:
             lines.append(f"   - **{L['collection']}:** {', '.join(cols)}")
+        loc_line = location_line(post, L)
+        if loc_line:
+            lines.append(f"   - **{L['location']}:** {loc_line}")
         lines.append(f"   - **{L['content']}:** {video_line(post, lang)}")
         caption = (post.get("caption") or "").strip()
         if caption:
@@ -166,6 +189,7 @@ def render_json(posts: list[dict], lang: str = "tr") -> list[dict]:
             "has_video": bool(post.get("has_video")),
             "media_type": post.get("media_type"),
             "collections": loads_list(post.get("collections")),
+            "location": loads_dict(post.get("location")),
             "content_summary": post.get("summary"),
             "content_line": video_line(post, lang),
             "transcript": post.get("transcript"),
