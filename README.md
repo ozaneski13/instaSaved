@@ -324,6 +324,7 @@ labels. After changing either, run `process --redo` / `report`.
 | Symptom | Fix |
 |---|---|
 | `OTURUM YOK` / `login_required` | `run.cmd` → 1 to log in again |
+| `GİRİŞ OLMADI: ...` during login | The message says what to do: approve the login in the Instagram app ("This was me"), enter the e-mail/SMS code when prompted, or wait a few hours when throttled. A re-login keeps the saved device identity, so it does not show up as a new device |
 | `SERT DURMA: ... PleaseWaitFewMinutes / ChallengeRequired` | Instagram throttling. Wait a few hours; for a challenge, approve it in the app, then run 4 again |
 | `Claude Code CLI oturumu yok` | `claude auth status` in a terminal; if needed `claude` → `/login` |
 | `claude` command not found | `npm i -g @anthropic-ai/claude-code` or set the full path in `config.json → llm.exe` |
@@ -674,6 +675,7 @@ Sağlayıcı değiştirdikten sonra eski analizleri yenilemek için `run.cmd pro
 | Belirti | Çözüm |
 |---|---|
 | `OTURUM YOK` / `login_required` | `run.cmd` → 1 ile yeniden giriş |
+| Girişte `GİRİŞ OLMADI: ...` | Mesaj ne yapacağını söyler: Instagram uygulamasından "Bu bendim" onayı, istenirse e-posta/SMS kodu, sınırlamada birkaç saat bekleme. Yeniden giriş kayıtlı cihaz kimliğini korur, yeni cihaz olarak görünmez |
 | `SERT DURMA: ... PleaseWaitFewMinutes / ChallengeRequired` | Instagram sınırlaması. Birkaç saat bekle; challenge ise uygulamadan onayla, sonra tekrar 4 |
 | `Claude Code CLI oturumu yok` | Terminalde `claude auth status`; gerekirse `claude` → `/login` |
 | `claude` komutu bulunamadı | `npm i -g @anthropic-ai/claude-code` ya da `config.json → llm.exe` ile tam yol |

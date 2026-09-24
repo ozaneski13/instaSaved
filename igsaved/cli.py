@@ -67,7 +67,17 @@ def _use_browser(cfg: Config) -> bool:
 def cmd_ig_login(cfg: Config) -> int:
     from . import ig_private
 
-    name = ig_private.interactive_login(cfg)
+    try:
+        name = ig_private.interactive_login(cfg)
+    except (KeyboardInterrupt, EOFError):
+        log.error("GİRİŞ İPTAL EDİLDİ: menü 1'i istediğin zaman tekrar çalıştırabilirsin.")
+        return EXIT_ERROR
+    except Exception as exc:
+        message = ig_private.login_error_message(exc)
+        if message is None:
+            raise
+        log.error("GİRİŞ OLMADI: %s", message)
+        return EXIT_HARDSTOP
     print(f"Oturum kaydedildi (@{name}). Artık `run.cmd` → 3 (deneme) ya da 4 (tam koşu).")
     return EXIT_OK
 
